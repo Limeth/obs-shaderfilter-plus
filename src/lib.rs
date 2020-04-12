@@ -1,5 +1,7 @@
 #![feature(try_blocks)]
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::borrow::Cow;
 use std::time::{Instant, Duration};
 use std::path::PathBuf;
@@ -133,7 +135,7 @@ impl EffectParamCustom for EffectParamCustomFloat {
                 specialization: Self::PropertyDescriptorSpecialization {
                     min: std::f64::MIN,
                     max: std::f64::MAX,
-                    step: 1.0,
+                    step: 0.1,
                     slider: false,
                 },
             },
@@ -218,16 +220,16 @@ struct Data {
     effect: Option<PreparedEffect>,
     creation: Instant,
 
-    // mul_val: GraphicsEffectVec2Param,
-    // add_val: GraphicsEffectVec2Param,
-    // image: GraphicsEffectTextureParam,
-    // sampler: GraphicsSamplerState,
-
     property_shader: PropertyDescriptor<PropertyDescriptorSpecializationPath>,
+    property_shader_reload: PropertyDescriptor<PropertyDescriptorSpecializationButton>,
+
+    settings_update_requested: Arc<AtomicBool>,
 }
 
 impl Data {
-    pub fn new(source: SourceContext) -> Self {
+    pub fn new(settings: &mut SettingsContext, source: SourceContext) -> Self {
+        let settings_update_requested = Arc::new(AtomicBool::new(true));
+
         Self {
             source,
             effect: None,
@@ -241,6 +243,20 @@ impl Data {
                     default_path: CString::from(cstr!("")),
                 },
             },
+            property_shader_reload: PropertyDescriptor {
+                name: CString::new("shader_reload").unwrap(),
+                description: CString::new("Reload Shader").unwrap(),
+                specialization: PropertyDescriptorSpecializationButton::new(
+                    Box::new({
+                        let settings_update_requested = settings_update_requested.clone();
+                        move || {
+                            settings_update_requested.store(true, Ordering::SeqCst);
+                            false
+                        }
+                    }),
+                )
+            },
+            settings_update_requested,
         }
     }
 }
@@ -271,11 +287,12 @@ impl GetNameSource<Data> for ScrollFocusFilter {
 }
 
 impl GetPropertiesSource<Data> for ScrollFocusFilter {
-    fn get_properties(data: &Option<Data>) -> Properties {
-        let data = data.as_ref().unwrap();
+    fn get_properties(context: PluginContext<Data>) -> Properties {
+        let data = context.data().as_ref().unwrap();
         let mut properties = Properties::new();
 
         properties.add_property(&data.property_shader);
+        properties.add_property(&data.property_shader_reload);
 
         if let Some(effect) = data.effect.as_ref() {
             effect.params.custom.add_properties(&mut properties);
@@ -286,34 +303,37 @@ impl GetPropertiesSource<Data> for ScrollFocusFilter {
 }
 
 impl VideoTickSource<Data> for ScrollFocusFilter {
-    fn video_tick(data: &mut Option<Data>, seconds: f32) {
+    fn video_tick(mut context: PluginContext<Data>, seconds: f32) {
+        let (data, settings) = context.data_settings_mut();
         let data = if let Some(data) = data.as_mut() {
             data
         } else {
             return;
         };
-        let prepared_effect = if let Some(effect) = data.effect.as_mut() {
-            effect
-        } else {
-            return;
-        };
-        let params = &mut prepared_effect.params;
 
-        params.elapsed_time.prepare_value(data.creation.elapsed().as_secs_f32());
-        params.uv_size.prepare_value([
-            data.source.get_base_width() as i32,
-            data.source.get_base_height() as i32,
-        ]);
+        if let Some(effect) = data.effect.as_mut() {
+            let params = &mut effect.params;
+
+            params.elapsed_time.prepare_value(data.creation.elapsed().as_secs_f32());
+            params.uv_size.prepare_value([
+                data.source.get_base_width() as i32,
+                data.source.get_base_height() as i32,
+            ]);
+        }
+
+        if data.settings_update_requested.compare_and_swap(true, false, Ordering::SeqCst) {
+            data.source.update_source_settings(settings);
+        }
     }
 }
 
 impl VideoRenderSource<Data> for ScrollFocusFilter {
     fn video_render(
-        data: &mut Option<Data>,
+        mut context: PluginContext<Data>,
         _context: &mut ActiveContext,
         render: &mut VideoRenderContext,
     ) {
-        let data = if let Some(data) = data.as_mut() {
+        let data = if let Some(data) = context.data_mut().as_mut() {
             data
         } else {
             return;
@@ -387,19 +407,19 @@ impl CreatableSource<Data> for ScrollFocusFilter {
         //     }
         // });
 
-        source.update_source_settings(settings);
+        // source.update_source_settings(settings);
 
-        Data::new(source)
+        Data::new(settings, source)
     }
 }
 
 impl UpdateSource<Data> for ScrollFocusFilter {
     fn update(
-        data: &mut Option<Data>,
-        settings: &mut SettingsContext,
+        mut context: PluginContext<Data>,
         _context: &mut ActiveContext,
     ) {
         let result: Result<(), Cow<str>> = try {
+            let (data, settings) = context.data_settings_mut();
             let data = data.as_mut().ok_or_else(|| "Could not access the data.")?;
 
             const EFFECT_SOURCE_TEMPLATE: &'static str = include_str!("effect_template.effect");

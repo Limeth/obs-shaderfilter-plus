@@ -483,6 +483,8 @@ impl UpdateSource<Data> for ScrollFocusFilter {
                 effect,
                 params,
             });
+
+            data.source.update_source_properties();
         };
 
         if let Err(error_message) = result {

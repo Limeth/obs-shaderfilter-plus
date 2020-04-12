@@ -1,0 +1,17 @@
+[package]
+name = "obs-shaderfilter-plus"
+version = "0.1.0"
+authors = ["Jakub Hlusička <jakub.hlusicka@email.cz>"]
+edition = "2018"
+
+[lib]
+name = "obs_shaderfilter_plus"
+crate-type = ["cdylib"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+obs-wrapper = { path = "../rust-obs-plugins" }
+regex = "1"
+anyhow = "1.0"
+ammolite-math = { git = "https://github.com/metaview-org/ammolite", branch = "master" }

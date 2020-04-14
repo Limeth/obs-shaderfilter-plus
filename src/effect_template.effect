@@ -3,8 +3,9 @@ uniform texture2d image;
 
 uniform float elapsed_time;
 uniform int2 uv_size;
+uniform texture2d texture_fft;
 
-sampler_state textureSampler{
+sampler_state textureSampler {
     Filter = Linear;
     AddressU = Border;
     AddressV = Border;

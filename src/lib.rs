@@ -1,7 +1,8 @@
 #![feature(try_blocks)]
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Mutex, RwLock, Arc, Weak};
 use std::borrow::Cow;
 use std::time::{Instant, Duration};
 use std::path::PathBuf;
@@ -9,8 +10,20 @@ use std::fs::File;
 use std::ffi::{CStr, CString};
 use std::io::Read;
 use ammolite_math::*;
-use obs_wrapper::{graphics::*, obs_register_module, prelude::*, source::*};
+use smallvec::{SmallVec, smallvec};
+use lazy_static::lazy_static;
+use obs_wrapper::{
+    context::*,
+    graphics::*,
+    obs_register_module,
+    prelude::*,
+    source::*,
+    audio::*,
+};
 use regex::Regex;
+use fourier::*;
+use num_complex::Complex;
+use effect::*;
 
 macro_rules! throw {
     ($e:expr) => {{
@@ -19,206 +32,237 @@ macro_rules! throw {
     }}
 }
 
-// use crossbeam_channel::{unbounded, Receiver, Sender};
+mod effect;
 
-struct EffectParam<T: ShaderParamType> where T::RustType: Default + Clone {
-    param: GraphicsEffectParamTyped<T>,
-    value: T::RustType,
+lazy_static! {
+    static ref GLOBAL_STATE: GlobalState = Default::default();
 }
 
-impl<T: ShaderParamType> EffectParam<T> where T::RustType: Default + Clone {
-    fn new(param: GraphicsEffectParamTyped<T>) -> Self {
+pub trait GlobalStateComponentType {
+    type Descriptor;
+    type Result;
+
+    fn create(descriptor: &Self::Descriptor) -> Self;
+    fn register_callback(self: &Arc<Self>, callback: Box<dyn Fn(&Self::Result) + Send + Sync>);
+}
+
+#[derive(Clone, Hash, PartialEq, Eq)]
+pub struct GlobalStateAudioFFTDescriptor {
+    mix: usize,
+    // Assume stereo signal, channels in ascending order
+    channels: SmallVec<[usize; 2]>,
+}
+
+impl GlobalStateAudioFFTDescriptor {
+    pub fn new(mix: usize, channels: &[usize]) -> Self {
+        let mut channels_vec = SmallVec::with_capacity(channels.len());
+
+        channels_vec.extend_from_slice(channels);
+        channels_vec.sort();
+
+        // TODO: freeze channels_vec
+
         Self {
-            param,
-            value: Default::default(),
+            mix,
+            channels: channels_vec,
+        }
+    }
+}
+
+pub struct GlobalStateAudioFFTMutable {
+    callbacks: Vec<Box<dyn Fn(&Vec<f32>) + Send + Sync>>,
+    audio_output: Option<AudioOutput>,
+}
+
+impl Default for GlobalStateAudioFFTMutable {
+    fn default() -> Self {
+        Self {
+            callbacks: Default::default(),
+            audio_output: Default::default(),
+        }
+    }
+}
+
+pub struct GlobalStateAudioFFT {
+    descriptor: GlobalStateAudioFFTDescriptor,
+    mutable: Arc<RwLock<GlobalStateAudioFFTMutable>>,
+}
+
+impl GlobalStateAudioFFT {
+    fn process_audio_data<'a>(self: &Arc<Self>, audio_data: AudioData<'a>) -> <Self as GlobalStateComponentType>::Result {
+        match audio_data.info().format() {
+            AudioFormatKind::PlanarF32 => {
+                let audio_data = audio_data.downcast::<AudioFormatPlanarF32>().unwrap();
+                let mut average = vec![0.0; audio_data.inner.frames() as usize];
+
+                self.descriptor.channels.iter().copied()
+                    .for_each(|channel| {
+                        audio_data.samples(channel).map(|samples| {
+                            let len = samples.len();
+                            let mut fft_data: Vec<Complex<f32>> = samples.map(|sample| {
+                                Complex::new(sample, 0.0)
+                            }).collect::<Vec<_>>();
+                            let fft = fourier::create_fft_f32(len);
+
+                            fft.transform_in_place(&mut fft_data, Transform::SqrtScaledFft);
+
+                            fft_data.into_iter().enumerate().for_each(|(sample_index, complex)| {
+                                let norm = complex.norm();
+
+                                average[sample_index] += norm;
+                            });
+                        });
+                    });
+
+                average.iter_mut().for_each(|value| *value = *value / self.descriptor.channels.len() as f32);
+
+                return average
+            },
+            _ => {
+                eprintln!("Unsupported audio format.");
+                return Vec::new();
+            }
+        }
+    }
+}
+
+impl GlobalStateComponentType for GlobalStateAudioFFT {
+    type Descriptor = GlobalStateAudioFFTDescriptor;
+    type Result = Vec<f32>; // TODO
+
+    fn create(descriptor: &Self::Descriptor) -> Self {
+        Self {
+            descriptor: descriptor.clone(),
+            mutable: Default::default(),
         }
     }
 
-    fn prepare_value(&mut self, new_value: T::RustType) {
-        self.value = new_value;
-    }
+    fn register_callback(self: &Arc<Self>, callback: Box<dyn Fn(&Self::Result) + Send + Sync>) {
+        let mut mutable_write = self.mutable.write().unwrap();
+        let connect_output = mutable_write.callbacks.len() == 0;
 
-    fn assign_value(&mut self) {
-        self.param.set_param_value(self.value.clone());
-    }
-}
+        mutable_write.callbacks.push(callback);
 
-trait EffectParamCustom {
-    type ShaderParamType: ShaderParamType;
-    type PropertyDescriptorSpecialization: PropertyDescriptorSpecialization;
+        if connect_output {
+            let audio = Audio::get();
 
-    fn new(param: GraphicsEffectParamTyped<Self::ShaderParamType>, settings: &mut SettingsContext) -> Self;
-    fn assign_value(&mut self);
-}
+            mutable_write.audio_output = Some(audio.connect_output(
+                self.descriptor.mix,
+                {
+                    let mutable = self.mutable.clone();
+                    let self_cloned = self.clone();
 
-struct EffectParamCustomBool {
-    effect_param: EffectParam<ShaderParamTypeBool>,
-    property_descriptor: PropertyDescriptor<PropertyDescriptorSpecializationBool>,
-}
+                    Box::new(move |audio_data| {
+                        let result = Self::process_audio_data(&self_cloned, audio_data);
+                        let mutable_read = mutable.read().unwrap();
 
-impl EffectParamCustom for EffectParamCustomBool {
-    type ShaderParamType = ShaderParamTypeBool;
-    type PropertyDescriptorSpecialization = PropertyDescriptorSpecializationBool;
-
-    fn new(param: GraphicsEffectParamTyped<Self::ShaderParamType>, settings: &mut SettingsContext) -> Self {
-        let mut result = Self {
-            property_descriptor: PropertyDescriptor {
-                name: CString::new(param.inner.name()).unwrap(),
-                description: CString::new(param.inner.name()).unwrap(),
-                specialization: Self::PropertyDescriptorSpecialization {},
-            },
-            effect_param: EffectParam::new(param),
-        };
-        let default_value = *result.effect_param.param.get_param_value_default();
-        let loaded_value = settings.get_property_value(&result.property_descriptor, &default_value);
-
-        result.effect_param.prepare_value(loaded_value);
-
-        result
-    }
-
-    fn assign_value(&mut self) {
-        self.effect_param.assign_value()
-    }
-}
-
-struct EffectParamCustomInt {
-    effect_param: EffectParam<ShaderParamTypeInt>,
-    property_descriptor: PropertyDescriptor<PropertyDescriptorSpecializationI32>,
-}
-
-impl EffectParamCustom for EffectParamCustomInt {
-    type ShaderParamType = ShaderParamTypeInt;
-    type PropertyDescriptorSpecialization = PropertyDescriptorSpecializationI32;
-
-    fn new(param: GraphicsEffectParamTyped<Self::ShaderParamType>, settings: &mut SettingsContext) -> Self {
-        let mut result = Self {
-            property_descriptor: PropertyDescriptor {
-                name: CString::new(param.inner.name()).unwrap(),
-                description: CString::new(param.inner.name()).unwrap(),
-                specialization: Self::PropertyDescriptorSpecialization {
-                    min: std::i32::MIN,
-                    max: std::i32::MAX,
-                    step: 1,
-                    slider: false,
+                        for callback in &mutable_read.callbacks {
+                            (callback)(&result);
+                        }
+                    })
                 },
-            },
-            effect_param: EffectParam::new(param),
-        };
-        let default_value = *result.effect_param.param.get_param_value_default();
-        let loaded_value = settings.get_property_value(&result.property_descriptor, &default_value);
-
-        result.effect_param.prepare_value(loaded_value);
-
-        result
-    }
-
-    fn assign_value(&mut self) {
-        self.effect_param.assign_value()
+            ))
+        }
     }
 }
 
-struct EffectParamCustomFloat {
-    effect_param: EffectParam<ShaderParamTypeFloat>,
-    property_descriptor: PropertyDescriptor<PropertyDescriptorSpecializationF64>,
-}
-
-impl EffectParamCustom for EffectParamCustomFloat {
-    type ShaderParamType = ShaderParamTypeFloat;
-    type PropertyDescriptorSpecialization = PropertyDescriptorSpecializationF64;
-
-    fn new(param: GraphicsEffectParamTyped<Self::ShaderParamType>, settings: &mut SettingsContext) -> Self {
-        let mut result = Self {
-            property_descriptor: PropertyDescriptor {
-                name: CString::new(param.inner.name()).unwrap(),
-                description: CString::new(param.inner.name()).unwrap(),
-                specialization: Self::PropertyDescriptorSpecialization {
-                    min: std::f64::MIN,
-                    max: std::f64::MAX,
-                    step: 0.1,
-                    slider: false,
-                },
-            },
-            effect_param: EffectParam::new(param),
-        };
-        let default_value = (*result.effect_param.param.get_param_value_default()) as f64;
-        let loaded_value = settings.get_property_value(&result.property_descriptor, &default_value);
-
-        result.effect_param.prepare_value(loaded_value as f32);
-
-        result
-    }
-
-    fn assign_value(&mut self) {
-        self.effect_param.assign_value()
-    }
-}
-
+/// A component of the global state, which is dynamically allocated and
+/// deallocated depending on the reference count.
 #[derive(Default)]
-struct EffectParamsCustom {
-    params_bool: Vec<EffectParamCustomBool>,
-    params_float: Vec<EffectParamCustomFloat>,
-    params_int: Vec<EffectParamCustomInt>,
-    // TODO: Textures
+pub struct GlobalStateComponent<T: GlobalStateComponentType> {
+    pub weak_ptr: RwLock<Weak<T>>,
+    pub descriptor: T::Descriptor,
 }
 
-impl EffectParamsCustom {
-    fn assign_values(&mut self) {
-        self.params_bool.iter_mut().for_each(EffectParamCustom::assign_value);
-        self.params_float.iter_mut().for_each(EffectParamCustom::assign_value);
-        self.params_int.iter_mut().for_each(EffectParamCustom::assign_value);
+impl<T: GlobalStateComponentType> GlobalStateComponent<T> {
+    pub fn new(descriptor: T::Descriptor) -> Self {
+        Self {
+            weak_ptr: RwLock::new(Weak::new()),
+            descriptor,
+        }
     }
 
-    fn add_properties(&self, properties: &mut Properties) {
-        self.params_bool.iter().for_each(|param| properties.add_property(&param.property_descriptor));
-        self.params_float.iter().for_each(|param| properties.add_property(&param.property_descriptor));
-        self.params_int.iter().for_each(|param| properties.add_property(&param.property_descriptor));
-    }
-}
+    /// Attempts to get a strong reference to the component.
+    /// If the component was freed, it is constructed by this function.
+    pub fn get_component(&self) -> Arc<T> {
+        {
+            let weak_ptr_read = self.weak_ptr.read().unwrap();
 
-impl EffectParamsCustom {
-    fn add_param(&mut self, param: GraphicsEffectParam, settings: &mut SettingsContext) -> Result<(), Cow<'static, str>> {
-        use ShaderParamTypeKind::*;
-
-        match param.param_type() {
-            Unknown => throw!("Cannot add an effect param of unknown type."),
-            Bool  => self.params_bool.push(EffectParamCustomBool::new(param.downcast().unwrap(), settings)),
-            Float => self.params_float.push(EffectParamCustomFloat::new(param.downcast().unwrap(), settings)),
-            Int   => self.params_int.push(EffectParamCustomInt::new(param.downcast().unwrap(), settings)),
-            Vec2 | Vec3 | Vec4 | IVec2 | IVec3 | IVec4 | Mat4 => {
-                throw!("Multi-component types as effect params are not yet supported.");
-            },
-            String => throw!("Strings as effect params are not yet supported."),
-            Texture => throw!("Textures as effect params are not yet supported."),
+            if let Some(strong_ptr) = weak_ptr_read.upgrade() {
+                return strong_ptr;
+            }
         }
 
-        Ok(())
+        {
+            let mut weak_ptr_write = self.weak_ptr.write().unwrap();
+
+            if let Some(strong_ptr) = weak_ptr_write.upgrade() {
+                return strong_ptr;
+            }
+
+            let strong_ptr: Arc<T> = Arc::new(T::create(&self.descriptor));
+
+            *weak_ptr_write = Arc::downgrade(&strong_ptr.clone());
+
+            strong_ptr
+        }
+    }
+
+    pub fn try_get_component(&self) -> Option<Arc<T>> {
+        let weak_ptr_read = self.weak_ptr.read().unwrap();
+
+        weak_ptr_read.upgrade()
     }
 }
 
-struct EffectParams {
-    elapsed_time: EffectParam<ShaderParamTypeFloat>,
-    uv_size: EffectParam<ShaderParamTypeIVec2>,
-    custom: EffectParamsCustom,
+pub struct GlobalState {
+    pub audio_ffts: RwLock<HashMap<GlobalStateAudioFFTDescriptor, GlobalStateComponent<GlobalStateAudioFFT>>>,
 }
 
-impl EffectParams {
-    fn assign_values(&mut self) {
-        self.elapsed_time.assign_value();
-        self.uv_size.assign_value();
-        self.custom.assign_values();
+impl Default for GlobalState {
+    fn default() -> Self {
+        Self {
+            audio_ffts: Default::default(),
+        }
     }
 }
 
-struct PreparedEffect {
-    effect: GraphicsEffect,
-    params: EffectParams,
+impl GlobalState {
+    fn request_audio_fft(&self, descriptor: &GlobalStateAudioFFTDescriptor) -> Arc<GlobalStateAudioFFT> {
+        {
+            let audio_ffts_read = self.audio_ffts.read().unwrap();
+
+            if let Some(audio_fft) = audio_ffts_read.get(descriptor) {
+                return audio_fft.get_component();
+            }
+        }
+
+        {
+            let mut audio_ffts_write = self.audio_ffts.write().unwrap();
+
+            if let Some(audio_fft) = audio_ffts_write.get(descriptor) {
+                return audio_fft.get_component();
+            }
+
+            let component_wrapper = GlobalStateComponent::new(descriptor.clone());
+            let component = component_wrapper.get_component();
+
+            audio_ffts_write.insert(descriptor.clone(), component_wrapper);
+
+            component
+        }
+    }
 }
+
+// use crossbeam_channel::{unbounded, Receiver, Sender};
 
 struct Data {
     source: SourceContext,
     effect: Option<PreparedEffect>,
     creation: Instant,
+
+    audio_fft: Arc<GlobalStateAudioFFT>,
+    texture_fft: Arc<Mutex<Option<TextureDescriptor>>>,
 
     property_shader: PropertyDescriptor<PropertyDescriptorSpecializationPath>,
     property_shader_reload: PropertyDescriptor<PropertyDescriptorSpecializationButton>,
@@ -227,13 +271,42 @@ struct Data {
 }
 
 impl Data {
-    pub fn new(settings: &mut SettingsContext, source: SourceContext) -> Self {
+    pub fn new(source: SourceContext) -> Self {
         let settings_update_requested = Arc::new(AtomicBool::new(true));
+        let audio_fft = GLOBAL_STATE.request_audio_fft(&GlobalStateAudioFFTDescriptor::new(
+            0, // mix
+            &[0, 1], // channels
+        ));
+        let texture_fft: Arc<Mutex<Option<TextureDescriptor>>> = Default::default();
+
+        audio_fft.register_callback({
+            let texture_fft = texture_fft.clone();
+
+            Box::new(move |result| {
+                let mut texture_fft = texture_fft.lock().unwrap();
+                let texture_data = unsafe {
+                    std::slice::from_raw_parts::<u8>(
+                        result.as_ptr() as *const _,
+                        result.len() * std::mem::size_of::<f32>(),
+                    )
+                }.iter().copied().collect::<Vec<_>>();
+                let texture = TextureDescriptor {
+                    dimensions: [result.len(), 1],
+                    color_format: ColorFormatKind::R32F,
+                    levels: smallvec![texture_data],
+                    flags: 0,
+                };
+
+                *texture_fft = Some(texture);
+            })
+        });
 
         Self {
             source,
             effect: None,
             creation: Instant::now(),
+            audio_fft,
+            texture_fft,
             property_shader: PropertyDescriptor {
                 name: CString::new("shader").unwrap(),
                 description: CString::new("The shader to use.").unwrap(),
@@ -261,11 +334,15 @@ impl Data {
     }
 }
 
-// impl Drop for Data {
-//     fn drop(&mut self) {
-//         self.send.send(FilterMessage::CloseConnection).unwrap_or(());
-//     }
-// }
+impl Drop for Data {
+    fn drop(&mut self) {
+        // self.send.send(FilterMessage::CloseConnection).unwrap_or(());
+        if let Some(prepared_effect) = self.effect.take() {
+            let graphics_context = GraphicsContext::enter().unwrap();
+            prepared_effect.enable_and_drop(&graphics_context);
+        }
+    }
+}
 
 struct ScrollFocusFilter {
     context: ModuleContext,
@@ -319,6 +396,21 @@ impl VideoTickSource<Data> for ScrollFocusFilter {
                 data.source.get_base_width() as i32,
                 data.source.get_base_height() as i32,
             ]);
+
+            {
+                let mut texture_fft = data.texture_fft.lock().unwrap();
+
+                if let Some(texture_fft) = texture_fft.take() {
+                    // println!("Preparing texture");
+                    // dbg!(&texture_fft.levels[0][0..10]);
+                    params.texture_fft.prepare_value(texture_fft);
+                }
+            }
+
+            // {
+            //     let graphics_context = GraphicsContext::enter().unwrap();
+            //     params.stage_values(&graphics_context);
+            // }
         }
 
         if data.settings_update_requested.compare_and_swap(true, false, Ordering::SeqCst) {
@@ -330,8 +422,7 @@ impl VideoTickSource<Data> for ScrollFocusFilter {
 impl VideoRenderSource<Data> for ScrollFocusFilter {
     fn video_render(
         mut context: PluginContext<Data>,
-        _context: &mut ActiveContext,
-        render: &mut VideoRenderContext,
+        graphics_context: &mut GraphicsContext,
     ) {
         let data = if let Some(data) = context.data_mut().as_mut() {
             data
@@ -343,7 +434,7 @@ impl VideoRenderSource<Data> for ScrollFocusFilter {
         } else {
             return;
         };
-        let effect = &mut prepared_effect.effect;
+        let effect = &mut prepared_effect.effect.as_enabled_mut(graphics_context);
         let params = &mut prepared_effect.params;
         let source = &mut data.source;
         // let param_add = &mut data.add_val;
@@ -364,16 +455,13 @@ impl VideoRenderSource<Data> for ScrollFocusFilter {
         });
 
         source.process_filter(
-            render,
             effect,
             (cx, cy),
-            GraphicsColorFormat::RGBA,
+            ColorFormatKind::RGBA,
             GraphicsAllowDirectRendering::NoDirectRendering,
             |context, _effect| {
-                params.assign_values();
-                // params.elapsed_time.set_param_value(seconds_elapsed);
-                // param_add.set_vec2(context, &Vec2::new(current.x(), current.y()));
-                // param_mul.set_vec2(context, &Vec2::new(zoom, zoom));
+                params.stage_values(&context);
+                params.assign_values(&context);
                 // image.set_next_sampler(context, sampler);
             },
         );
@@ -381,42 +469,14 @@ impl VideoRenderSource<Data> for ScrollFocusFilter {
 }
 
 impl CreatableSource<Data> for ScrollFocusFilter {
-    fn create(settings: &mut SettingsContext, mut source: SourceContext) -> Data {
-        // let sampler = GraphicsSamplerState::from(GraphicsSamplerInfo::default());
-
-        // let (send_filter, receive_filter) = unbounded::<FilterMessage>();
-        // let (send_server, receive_server) = unbounded::<ServerMessage>();
-
-        // std::thread::spawn(move || {
-        //     let mut server = Server::new().unwrap();
-
-        //     loop {
-        //         if let Some(snapshot) = server.wait_for_event() {
-        //             send_server
-        //                 .send(ServerMessage::Snapshot(snapshot))
-        //                 .unwrap_or(());
-        //         }
-
-        //         if let Ok(msg) = receive_filter.try_recv() {
-        //             match msg {
-        //                 FilterMessage::CloseConnection => {
-        //                     return;
-        //                 }
-        //             }
-        //         }
-        //     }
-        // });
-
-        // source.update_source_settings(settings);
-
-        Data::new(settings, source)
+    fn create(settings: &mut SettingsContext, source: SourceContext) -> Data {
+        Data::new(source)
     }
 }
 
 impl UpdateSource<Data> for ScrollFocusFilter {
     fn update(
         mut context: PluginContext<Data>,
-        _context: &mut ActiveContext,
     ) {
         let result: Result<(), Cow<str>> = try {
             let (data, settings) = context.data_settings_mut();
@@ -443,11 +503,18 @@ impl UpdateSource<Data> for ScrollFocusFilter {
             let effect_source_c = CString::new(effect_source.as_ref())
                 .map_err(|_| "Shader contents cannot be converted to a C string.")?;
 
+            let graphics_context = GraphicsContext::enter()
+                .expect("Could not enter a graphics context.");
             let effect = GraphicsEffect::from_effect_string(
                 effect_source_c.as_c_str(),
                 shader_path_c.as_c_str(),
+                &graphics_context,
             ).ok_or_else(|| "Could not create the effect.")?;
             let mut builtin_param_names = vec!["ViewProj", "image"];
+
+            effect.params_iter().for_each(|param| {
+                dbg!(param.name());
+            });
 
             macro_rules! builtin_effect {
                 ($path:expr) => {{
@@ -461,6 +528,7 @@ impl UpdateSource<Data> for ScrollFocusFilter {
                             .ok_or_else(|| {
                                 format!("Incompatible effect parameter type `{}`.", $path)
                             })?
+                            .disable()
                     )
                 }}
             }
@@ -468,6 +536,7 @@ impl UpdateSource<Data> for ScrollFocusFilter {
             let mut params = EffectParams {
                 elapsed_time: builtin_effect!("elapsed_time"),
                 uv_size: builtin_effect!("uv_size"),
+                texture_fft: builtin_effect!("texture_fft"),
                 custom: Default::default(),
             };
 
@@ -479,9 +548,11 @@ impl UpdateSource<Data> for ScrollFocusFilter {
                 params.custom.add_param(custom_param, settings)?;
             }
 
-            data.effect = Some(PreparedEffect {
-                effect,
+            data.effect.replace(PreparedEffect {
+                effect: effect.disable(),
                 params,
+            }).map(|original| {
+                original.enable_and_drop(&graphics_context);
             });
 
             data.source.update_source_properties();

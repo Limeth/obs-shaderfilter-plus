@@ -407,10 +407,10 @@ impl VideoTickSource<Data> for ScrollFocusFilter {
                 }
             }
 
-            // {
-            //     let graphics_context = GraphicsContext::enter().unwrap();
-            //     params.stage_values(&graphics_context);
-            // }
+            {
+                let graphics_context = GraphicsContext::enter().unwrap();
+                params.stage_values(&graphics_context);
+            }
         }
 
         if data.settings_update_requested.compare_and_swap(true, false, Ordering::SeqCst) {
@@ -460,7 +460,6 @@ impl VideoRenderSource<Data> for ScrollFocusFilter {
             ColorFormatKind::RGBA,
             GraphicsAllowDirectRendering::NoDirectRendering,
             |context, _effect| {
-                params.stage_values(&context);
                 params.assign_values(&context);
                 // image.set_next_sampler(context, sampler);
             },

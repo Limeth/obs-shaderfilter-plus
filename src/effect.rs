@@ -21,16 +21,17 @@ use paste::item;
 /// Used to convert cloneable values into `ShaderParamType::RustType`.
 pub trait EffectParamType {
     type ShaderParamType: ShaderParamType;
-    type PreparedValueType: Default + Clone;
+    type PreparedValueType: Default;
 
     fn convert_and_stage_value(
         prepared: Self::PreparedValueType,
-        context: &FilterContext,
-    ) -> FilterContextDependentDisabled<<Self::ShaderParamType as ShaderParamType>::RustType>;
+        context: &GraphicsContext,
+    ) -> GraphicsContextDependentDisabled<<Self::ShaderParamType as ShaderParamType>::RustType>;
 
     fn assign_staged_value<'a, 'b>(
         staged: &'b <Self::ShaderParamType as ShaderParamType>::RustType,
         param: &'b mut EnableGuardMut<'a, 'b, GraphicsEffectParamTyped<Self::ShaderParamType>, GraphicsContext>,
+        context: &'b FilterContext,
     );
 }
 
@@ -71,30 +72,31 @@ pub type EffectParamTexture = EffectParam<EffectParamTypeTexture>;
 
 pub struct EffectParamTypeClone<T>
     where T: ShaderParamType,
-          <T as ShaderParamType>::RustType: Clone + Default,
+          <T as ShaderParamType>::RustType: Default,
 {
     __marker: std::marker::PhantomData<T>,
 }
 
 impl<T> EffectParamType for EffectParamTypeClone<T>
     where T: ShaderParamType,
-          <T as ShaderParamType>::RustType: Clone + Default,
+          <T as ShaderParamType>::RustType: Default,
 {
     type ShaderParamType = T;
     type PreparedValueType = <T as ShaderParamType>::RustType;
 
     fn convert_and_stage_value(
         prepared: Self::PreparedValueType,
-        context: &FilterContext,
-    ) -> FilterContextDependentDisabled<<Self::ShaderParamType as ShaderParamType>::RustType> {
+        context: &GraphicsContext,
+    ) -> GraphicsContextDependentDisabled<<Self::ShaderParamType as ShaderParamType>::RustType> {
         ContextDependent::new(prepared, context).disable()
     }
 
     fn assign_staged_value<'a, 'b>(
         staged: &'b <Self::ShaderParamType as ShaderParamType>::RustType,
         param: &'b mut EnableGuardMut<'a, 'b, GraphicsEffectParamTyped<Self::ShaderParamType>, GraphicsContext>,
+        context: &'b FilterContext,
     ) {
-        param.set_param_value(&staged);
+        param.set_param_value(&staged, context);
     }
 }
 
@@ -106,8 +108,8 @@ impl EffectParamType for EffectParamTypeTexture {
 
     fn convert_and_stage_value(
         prepared: Self::PreparedValueType,
-        context: &FilterContext,
-    ) -> FilterContextDependentDisabled<<Self::ShaderParamType as ShaderParamType>::RustType> {
+        context: &GraphicsContext,
+    ) -> GraphicsContextDependentDisabled<<Self::ShaderParamType as ShaderParamType>::RustType> {
         let levels: Vec<&[u8]> = prepared.levels.iter().map(|vec| &vec[..]).collect::<Vec<_>>();
 
         Texture::new(
@@ -122,46 +124,59 @@ impl EffectParamType for EffectParamTypeTexture {
     fn assign_staged_value<'a, 'b>(
         staged: &'b <Self::ShaderParamType as ShaderParamType>::RustType,
         param: &'b mut EnableGuardMut<'a, 'b, GraphicsEffectParamTyped<Self::ShaderParamType>, GraphicsContext>,
+        context: &'b FilterContext,
     ) {
-        param.set_param_value(&staged);
+        param.set_param_value(&staged, context);
     }
 }
 
+/// This type takes care of three different tasks:
+/// It stores a _prepared value_ (see `prepare_value`).
+/// It creates a graphics resource from the _prepared value_, if it was changed, and stores the result (see `stage_value`).
+/// It assigns the staged values to filters (see `assign_value`).
 pub struct EffectParam<T: EffectParamType> {
     pub param: GraphicsContextDependentDisabled<GraphicsEffectParamTyped<<T as EffectParamType>::ShaderParamType>>,
-    pub prepared_value: T::PreparedValueType,
-    pub staged_value: Option<FilterContextDependentDisabled<<<T as EffectParamType>::ShaderParamType as ShaderParamType>::RustType>>,
+    pub prepared_value: Option<T::PreparedValueType>,
+    pub staged_value: Option<GraphicsContextDependentDisabled<<<T as EffectParamType>::ShaderParamType as ShaderParamType>::RustType>>,
 }
 
 impl<T: EffectParamType> EffectParam<T> {
     pub fn new(param: GraphicsContextDependentDisabled<GraphicsEffectParamTyped<<T as EffectParamType>::ShaderParamType>>) -> Self {
         Self {
             param,
-            prepared_value: Default::default(),
+            prepared_value: Some(Default::default()),
             staged_value: None,
         }
     }
 
+    /// Requests a new staged value to be generated from this prepared value
     pub fn prepare_value(&mut self, new_value: T::PreparedValueType) {
-        self.prepared_value = new_value;
+        self.prepared_value = Some(new_value);
     }
 
-    pub fn stage_value<'a>(&mut self, graphics_context: &'a FilterContext) {
-        if let Some(previous) = self.staged_value.replace(<T as EffectParamType>::convert_and_stage_value(
-            self.prepared_value.clone(),
-            graphics_context,
-        )) {
-            previous.enable(graphics_context);
+    /// If a value is prepared (not `None`), creates a graphics resource from that value,
+    /// to be used in effect filter processing.
+    pub fn stage_value<'a>(&mut self, graphics_context: &'a GraphicsContext) {
+        if let Some(prepared_value) = self.prepared_value.take() {
+            if let Some(previous) = self.staged_value.replace(<T as EffectParamType>::convert_and_stage_value(
+                prepared_value,
+                graphics_context,
+            )) {
+                previous.enable(graphics_context);
+            }
         }
     }
 
-    pub fn assign_value<'a>(&mut self, graphics_context: &'a FilterContext) {
+    /// Assigns the staged value to the effect current filter.
+    pub fn assign_value<'a>(&mut self, context: &'a FilterContext) {
         let staged_value = self.staged_value.as_ref()
             .expect("Tried to assign a value before staging it.")
-            .as_enabled(graphics_context);
+            .as_enabled(context.graphics());
+
         <T as EffectParamType>::assign_staged_value(
             &staged_value,
-            &mut self.param.as_enabled_mut(graphics_context.graphics()),
+            &mut self.param.as_enabled_mut(context.graphics()),
+            context,
         );
     }
 
@@ -175,7 +190,7 @@ pub trait EffectParamCustom {
     type PropertyDescriptorSpecialization: PropertyDescriptorSpecialization;
 
     fn new<'a>(param: GraphicsContextDependentEnabled<'a, GraphicsEffectParamTyped<Self::ShaderParamType>>, settings: &mut SettingsContext) -> Self;
-    fn stage_value<'a>(&mut self, graphics_context: &'a FilterContext);
+    fn stage_value<'a>(&mut self, graphics_context: &'a GraphicsContext);
     fn assign_value<'a>(&mut self, graphics_context: &'a FilterContext);
     fn enable_and_drop(self, graphics_context: &GraphicsContext);
 }
@@ -206,7 +221,7 @@ impl EffectParamCustom for EffectParamCustomBool {
         result
     }
 
-    fn stage_value<'a>(&mut self, graphics_context: &'a FilterContext) {
+    fn stage_value<'a>(&mut self, graphics_context: &'a GraphicsContext) {
         self.effect_param.stage_value(graphics_context);
     }
 
@@ -250,7 +265,7 @@ impl EffectParamCustom for EffectParamCustomInt {
         result
     }
 
-    fn stage_value<'a>(&mut self, graphics_context: &'a FilterContext) {
+    fn stage_value<'a>(&mut self, graphics_context: &'a GraphicsContext) {
         self.effect_param.stage_value(graphics_context);
     }
 
@@ -294,7 +309,7 @@ impl EffectParamCustom for EffectParamCustomFloat {
         result
     }
 
-    fn stage_value<'a>(&mut self, graphics_context: &'a FilterContext) {
+    fn stage_value<'a>(&mut self, graphics_context: &'a GraphicsContext) {
         self.effect_param.stage_value(graphics_context);
     }
 
@@ -316,7 +331,7 @@ pub struct EffectParamsCustom {
 }
 
 impl EffectParamsCustom {
-    pub fn stage_values(&mut self, graphics_context: &FilterContext) {
+    pub fn stage_values(&mut self, graphics_context: &GraphicsContext) {
         self.params_bool.iter_mut().for_each(|param| param.stage_value(graphics_context));
         self.params_float.iter_mut().for_each(|param| param.stage_value(graphics_context));
         self.params_int.iter_mut().for_each(|param| param.stage_value(graphics_context));
@@ -367,7 +382,7 @@ pub struct EffectParams {
 }
 
 impl EffectParams {
-    pub fn stage_values(&mut self, graphics_context: &FilterContext) {
+    pub fn stage_values(&mut self, graphics_context: &GraphicsContext) {
         self.elapsed_time.stage_value(graphics_context);
         self.uv_size.stage_value(graphics_context);
         self.texture_fft.stage_value(graphics_context);

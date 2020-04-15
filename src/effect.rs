@@ -205,7 +205,7 @@ impl EffectParamCustom for EffectParamCustomBool {
     type PropertyDescriptorSpecialization = PropertyDescriptorSpecializationBool;
 
     fn new<'a>(param: GraphicsContextDependentEnabled<'a, GraphicsEffectParamTyped<Self::ShaderParamType>>, settings: &mut SettingsContext) -> Self {
-        let default_value = *param.get_param_value_default();
+        let default_value = *param.get_param_value_default().unwrap_or(&false);
         let mut result = Self {
             property_descriptor: PropertyDescriptor {
                 name: CString::new(param.inner.name()).unwrap(),
@@ -244,7 +244,7 @@ impl EffectParamCustom for EffectParamCustomInt {
     type PropertyDescriptorSpecialization = PropertyDescriptorSpecializationI32;
 
     fn new<'a>(param: GraphicsContextDependentEnabled<'a, GraphicsEffectParamTyped<Self::ShaderParamType>>, settings: &mut SettingsContext) -> Self {
-        let default_value = *param.get_param_value_default();
+        let default_value = *param.get_param_value_default().unwrap_or(&0);
         let mut result = Self {
             property_descriptor: PropertyDescriptor {
                 name: CString::new(param.inner.name()).unwrap(),
@@ -288,7 +288,7 @@ impl EffectParamCustom for EffectParamCustomFloat {
     type PropertyDescriptorSpecialization = PropertyDescriptorSpecializationF64;
 
     fn new<'a>(param: GraphicsContextDependentEnabled<'a, GraphicsEffectParamTyped<Self::ShaderParamType>>, settings: &mut SettingsContext) -> Self {
-        let default_value = *param.get_param_value_default() as f64;
+        let default_value = *param.get_param_value_default().unwrap_or(&0.0) as f64;
         let mut result = Self {
             property_descriptor: PropertyDescriptor {
                 name: CString::new(param.inner.name()).unwrap(),
@@ -322,11 +322,51 @@ impl EffectParamCustom for EffectParamCustomFloat {
     }
 }
 
+pub struct EffectParamCustomVec4 {
+    pub effect_param: EffectParamVec4,
+    pub property_descriptor: PropertyDescriptor<PropertyDescriptorSpecializationColor>,
+}
+
+impl EffectParamCustom for EffectParamCustomVec4 {
+    type ShaderParamType = ShaderParamTypeVec4;
+    type PropertyDescriptorSpecialization = PropertyDescriptorSpecializationColor;
+
+    fn new<'a>(param: GraphicsContextDependentEnabled<'a, GraphicsEffectParamTyped<Self::ShaderParamType>>, settings: &mut SettingsContext) -> Self {
+        let default_value = *param.get_param_value_default().unwrap_or(&[0.0; 4]);
+        let mut result = Self {
+            property_descriptor: PropertyDescriptor {
+                name: CString::new(param.inner.name()).unwrap(),
+                description: CString::new(param.inner.name()).unwrap(),
+                specialization: Self::PropertyDescriptorSpecialization {},
+            },
+            effect_param: EffectParam::new(param.disable()),
+        };
+        let loaded_value = settings.get_property_value(&result.property_descriptor, &default_value);
+
+        result.effect_param.prepare_value(loaded_value);
+
+        result
+    }
+
+    fn stage_value<'a>(&mut self, graphics_context: &'a GraphicsContext) {
+        self.effect_param.stage_value(graphics_context);
+    }
+
+    fn assign_value<'a>(&mut self, graphics_context: &'a FilterContext) {
+        self.effect_param.assign_value(graphics_context);
+    }
+
+    fn enable_and_drop(self, graphics_context: &GraphicsContext) {
+        self.effect_param.enable_and_drop(graphics_context);
+    }
+}
+
 #[derive(Default)]
 pub struct EffectParamsCustom {
     pub params_bool: Vec<EffectParamCustomBool>,
     pub params_float: Vec<EffectParamCustomFloat>,
     pub params_int: Vec<EffectParamCustomInt>,
+    pub params_vec4: Vec<EffectParamCustomVec4>,
     // TODO: Textures
 }
 
@@ -335,42 +375,52 @@ impl EffectParamsCustom {
         self.params_bool.iter_mut().for_each(|param| param.stage_value(graphics_context));
         self.params_float.iter_mut().for_each(|param| param.stage_value(graphics_context));
         self.params_int.iter_mut().for_each(|param| param.stage_value(graphics_context));
+        self.params_vec4.iter_mut().for_each(|param| param.stage_value(graphics_context));
     }
 
     pub fn assign_values(&mut self, graphics_context: &FilterContext) {
         self.params_bool.iter_mut().for_each(|param| param.assign_value(graphics_context));
         self.params_float.iter_mut().for_each(|param| param.assign_value(graphics_context));
         self.params_int.iter_mut().for_each(|param| param.assign_value(graphics_context));
+        self.params_vec4.iter_mut().for_each(|param| param.assign_value(graphics_context));
     }
 
     pub fn enable_and_drop(self, graphics_context: &GraphicsContext) {
         self.params_bool.into_iter().for_each(|param| param.enable_and_drop(graphics_context));
         self.params_float.into_iter().for_each(|param| param.enable_and_drop(graphics_context));
         self.params_int.into_iter().for_each(|param| param.enable_and_drop(graphics_context));
+        self.params_vec4.into_iter().for_each(|param| param.enable_and_drop(graphics_context));
     }
 
     pub fn add_properties(&self, properties: &mut Properties) {
         self.params_bool.iter().for_each(|param| properties.add_property(&param.property_descriptor));
         self.params_float.iter().for_each(|param| properties.add_property(&param.property_descriptor));
         self.params_int.iter().for_each(|param| properties.add_property(&param.property_descriptor));
+        self.params_vec4.iter().for_each(|param| properties.add_property(&param.property_descriptor));
     }
 
     pub fn add_param<'a>(&mut self, param: GraphicsContextDependentEnabled<'a, GraphicsEffectParam>, settings: &mut SettingsContext) -> Result<(), Cow<'static, str>> {
         use ShaderParamTypeKind::*;
 
-        match param.param_type() {
-            Unknown => throw!("Cannot add an effect param of unknown type."),
-            Bool  => self.params_bool.push(EffectParamCustomBool::new(param.downcast().unwrap(), settings)),
-            Float => self.params_float.push(EffectParamCustomFloat::new(param.downcast().unwrap(), settings)),
-            Int   => self.params_int.push(EffectParamCustomInt::new(param.downcast().unwrap(), settings)),
-            Vec2 | Vec3 | Vec4 | IVec2 | IVec3 | IVec4 | Mat4 => {
-                throw!("Multi-component types as effect params are not yet supported.");
-            },
-            String => throw!("Strings as effect params are not yet supported."),
-            Texture => throw!("Textures as effect params are not yet supported."),
-        }
+        let param_name = param.name().to_string();
+        let result: Result<(), Cow<'static, str>> = try {
+            match param.param_type() {
+                Unknown => throw!("Cannot add an effect param of unknown type. Make sure to use HLSL type names for uniform variables."),
+                Bool  => self.params_bool.push(EffectParamCustomBool::new(param.downcast().unwrap(), settings)),
+                Float => self.params_float.push(EffectParamCustomFloat::new(param.downcast().unwrap(), settings)),
+                Int   => self.params_int.push(EffectParamCustomInt::new(param.downcast().unwrap(), settings)),
+                Vec4  => self.params_vec4.push(EffectParamCustomVec4::new(param.downcast().unwrap(), settings)),
+                Vec2 | Vec3 | IVec2 | IVec3 | IVec4 | Mat4 => {
+                    throw!("Multi-component types as effect params are not yet supported.");
+                },
+                String => throw!("Strings as effect params are not yet supported."),
+                Texture => throw!("Textures as effect params are not yet supported."),
+            }
+        };
 
-        Ok(())
+        result.map_err(|err| {
+            Cow::Owned(format!("An error occurred while binding effect uniform variable `{}`: {}", param_name, err))
+        })
     }
 }
 

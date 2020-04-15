@@ -188,7 +188,6 @@ impl GlobalStateAudioFFT {
         let mut mutable_write = self.mutable.write().unwrap();
         let current_samples = audio_data.samples_normalized(self.descriptor.channel).unwrap();
 
-        let before = mutable_write.sample_buffer.len();
         mutable_write.sample_buffer.extend(current_samples);
 
         if !mutable_write.next_batch_scheduled.load(Ordering::SeqCst) {
@@ -203,7 +202,7 @@ impl GlobalStateAudioFFT {
 
             // Get rid of old data, if we lost some frames.
             if render_frames_over_margin > 0 {
-                println!("Skipping {} render frames in FFT calculation.", render_frames_over_margin);
+                // println!("Skipping {} render frames in FFT calculation.", render_frames_over_margin);
 
                 let samples_to_remove = samples_per_frame * render_frames_over_margin;
                 mutable_write.sample_buffer.drain(0..samples_to_remove);
@@ -556,7 +555,6 @@ impl VideoTickSource<Data> for ScrollFocusFilter {
             ]);
 
             if let Some(fft_result) = data.audio_fft.retrieve_result() {
-                dbg!(fft_result.batch_number);
                 let frequency_spectrum = &fft_result.frequency_spectrum;
                 let texture_data = unsafe {
                     std::slice::from_raw_parts::<u8>(
@@ -678,10 +676,6 @@ impl UpdateSource<Data> for ScrollFocusFilter {
             ).ok_or_else(|| "Could not create the effect.")?;
             let mut builtin_param_names = vec!["ViewProj", "image"];
 
-            effect.params_iter().for_each(|param| {
-                dbg!(param.name());
-            });
-
             macro_rules! builtin_effect {
                 ($path:expr) => {{
                     builtin_param_names.push($path);
@@ -700,9 +694,9 @@ impl UpdateSource<Data> for ScrollFocusFilter {
             }
 
             let mut params = EffectParams {
-                elapsed_time: builtin_effect!("elapsed_time"),
-                uv_size: builtin_effect!("uv_size"),
-                texture_fft: builtin_effect!("texture_fft"),
+                elapsed_time: builtin_effect!("builtin_elapsed_time"),
+                uv_size: builtin_effect!("builtin_uv_size"),
+                texture_fft: builtin_effect!("builtin_texture_fft"),
                 custom: Default::default(),
             };
 

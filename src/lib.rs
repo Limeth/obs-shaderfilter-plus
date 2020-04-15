@@ -50,21 +50,62 @@ pub trait GlobalStateComponentType {
     // fn register_callback(self: &Arc<Self>, callback: Box<dyn Fn(&Self::Result) + Send + Sync>);
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum WindowFunction {
+    None,
+    Blackman,
+    Cosine {
+        a: OrderedFloat<f64>,
+        b: OrderedFloat<f64>,
+        c: OrderedFloat<f64>,
+        d: OrderedFloat<f64>,
+    },
+    Hamming,
+    Hanning,
+    Nuttall,
+    Triangular,
+}
+
+impl WindowFunction {
+    pub fn generate_coefficients(self, len: usize) -> Vec<f32> {
+        use apodize::*;
+        use WindowFunction::*;
+
+        match self {
+            None => std::iter::repeat(1.0).take(len).collect::<Vec<_>>(),
+            Blackman => blackman_iter(len).map(|coef| coef as f32).collect::<Vec<_>>(),
+            Cosine { a, b, c, d } => cosine_iter(*a, *b, *c, *d, len).map(|coef| coef as f32).collect::<Vec<_>>(),
+            Hamming => hamming_iter(len).map(|coef| coef as f32).collect::<Vec<_>>(),
+            Hanning => hanning_iter(len).map(|coef| coef as f32).collect::<Vec<_>>(),
+            Nuttall => nuttall_iter(len).map(|coef| coef as f32).collect::<Vec<_>>(),
+            Triangular => triangular_iter(len).map(|coef| coef as f32).collect::<Vec<_>>(),
+        }
+    }
+}
+
 #[derive(Clone, Hash, PartialEq, Eq)]
 pub struct GlobalStateAudioFFTDescriptor {
     mix: usize,
     channel: usize,
     dampening_factor_attack: OrderedFloat<f64>,
     dampening_factor_release: OrderedFloat<f64>,
+    window_function: WindowFunction,
 }
 
 impl GlobalStateAudioFFTDescriptor {
-    pub fn new(mix: usize, channel: usize, dampening_factor_attack: f64, dampening_factor_release: f64) -> Self {
+    pub fn new(
+        mix: usize,
+        channel: usize,
+        dampening_factor_attack: f64,
+        dampening_factor_release: f64,
+        window_function: WindowFunction,
+    ) -> Self {
         Self {
             mix,
             channel,
             dampening_factor_attack: OrderedFloat(dampening_factor_attack),
             dampening_factor_release: OrderedFloat(dampening_factor_release),
+            window_function,
         }
     }
 }
@@ -78,7 +119,7 @@ pub struct FFTResult {
 pub struct GlobalStateAudioFFTMutable {
     audio_output: Option<AudioOutput>,
     sample_buffer: VecDeque<f32>,
-    frames_in_buffer: usize,
+    window: Arc<Vec<f32>>,
     /// Set during `retrieve_result` to indicate that the analysis of the next
     /// batch should be performed.
     next_batch_scheduled: AtomicBool,
@@ -91,7 +132,7 @@ impl Default for GlobalStateAudioFFTMutable {
         Self {
             audio_output: Default::default(),
             sample_buffer: Default::default(),
-            frames_in_buffer: 0,
+            window: Arc::new(Vec::new()),
             next_batch_scheduled: AtomicBool::new(true),
             result: None,
         }
@@ -125,10 +166,13 @@ impl GlobalStateAudioFFT {
 
     fn perform_analysis(
         samples: impl Iterator<Item=f32> + ExactSizeIterator,
+        window: &[f32],
     ) -> Vec<f32> {
+        assert_eq!(samples.len(), window.len());
+
         let len = samples.len();
-        let mut fft_data: Vec<Complex<f32>> = samples.map(|sample| {
-            Complex::new(sample, 0.0)
+        let mut fft_data: Vec<Complex<f32>> = samples.zip(window.iter()).map(|(sample, window_coefficient)| {
+            Complex::new(sample * window_coefficient, 0.0)
         }).collect::<Vec<_>>();
         let fft = fourier::create_fft_f32(len);
 
@@ -144,6 +188,7 @@ impl GlobalStateAudioFFT {
         let mut mutable_write = self.mutable.write().unwrap();
         let current_samples = audio_data.samples_normalized(self.descriptor.channel).unwrap();
 
+        let before = mutable_write.sample_buffer.len();
         mutable_write.sample_buffer.extend(current_samples);
 
         if !mutable_write.next_batch_scheduled.load(Ordering::SeqCst) {
@@ -154,18 +199,23 @@ impl GlobalStateAudioFFT {
         let render_frames_accumulated = mutable_write.sample_buffer.len() / samples_per_frame;
 
         if render_frames_accumulated > 0 {
+            let render_frames_over_margin = render_frames_accumulated.saturating_sub(1);
+
             // Get rid of old data, if we lost some frames.
-            if render_frames_accumulated > 1 {
-                let render_frames_to_remove = render_frames_accumulated - 1;
+            if render_frames_over_margin > 0 {
+                println!("Skipping {} render frames in FFT calculation.", render_frames_over_margin);
 
-                println!("Skipping {} render frames in FFT calculation.", render_frames_to_remove);
-
-                let samples_to_remove = samples_per_frame * render_frames_to_remove;
+                let samples_to_remove = samples_per_frame * render_frames_over_margin;
                 mutable_write.sample_buffer.drain(0..samples_to_remove);
             }
 
+            if mutable_write.window.len() != samples_per_frame {
+                mutable_write.window = Arc::new(self.descriptor.window_function.generate_coefficients(samples_per_frame));
+            }
+
+            let window = mutable_write.window.clone();
             let current_accumulated_samples = mutable_write.sample_buffer.drain(0..samples_per_frame);
-            let mut analysis_result = Self::perform_analysis(current_accumulated_samples);
+            let mut analysis_result = Self::perform_analysis(current_accumulated_samples, &window);
 
             // Dampen the result by mixing it with the result from the previous batch
             if *self.descriptor.dampening_factor_attack > 0.0 || *self.descriptor.dampening_factor_release > 0.0 {
@@ -378,7 +428,8 @@ impl Data {
             0, // channel
             0.0, // dampening attack
             // 0.1, // dampening release
-            0.0, // dampening release
+            0.001, // dampening release
+            WindowFunction::Hanning,
         ));
         let texture_fft: Arc<Mutex<Option<TextureDescriptor>>> = Default::default();
         let audio_counter = Arc::new(AtomicUsize::new(0));

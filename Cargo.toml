@@ -21,4 +21,4 @@ fourier = "0.1"
 num-complex = "0.2"
 paste = "0.1.7"
 ordered-float = "1.0"
-stft = { git = "https://github.com/snd/stft", branch = "master" }
+apodize = "1.0"

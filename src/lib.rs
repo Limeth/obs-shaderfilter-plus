@@ -1,18 +1,21 @@
 #![feature(try_blocks)]
+#![feature(clamp)]
 
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, RwLock, Arc, Weak};
+use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Mutex, RwLock, Arc, Weak, RwLockReadGuard};
 use std::borrow::Cow;
 use std::time::{Instant, Duration};
 use std::path::PathBuf;
 use std::fs::File;
 use std::ffi::{CStr, CString};
 use std::io::Read;
+use ordered_float::OrderedFloat;
 use ammolite_math::*;
 use smallvec::{SmallVec, smallvec};
 use lazy_static::lazy_static;
 use obs_wrapper::{
+    info::*,
     context::*,
     graphics::*,
     obs_register_module,
@@ -42,43 +45,55 @@ pub trait GlobalStateComponentType {
     type Descriptor;
     type Result;
 
-    fn create(descriptor: &Self::Descriptor) -> Self;
-    fn register_callback(self: &Arc<Self>, callback: Box<dyn Fn(&Self::Result) + Send + Sync>);
+    fn create(descriptor: &Self::Descriptor) -> Arc<Self>;
+    fn retrieve_result(self: &Arc<Self>) -> Option<Self::Result>;
+    // fn register_callback(self: &Arc<Self>, callback: Box<dyn Fn(&Self::Result) + Send + Sync>);
 }
 
 #[derive(Clone, Hash, PartialEq, Eq)]
 pub struct GlobalStateAudioFFTDescriptor {
     mix: usize,
-    // Assume stereo signal, channels in ascending order
-    channels: SmallVec<[usize; 2]>,
+    channel: usize,
+    dampening_factor_attack: OrderedFloat<f64>,
+    dampening_factor_release: OrderedFloat<f64>,
 }
 
 impl GlobalStateAudioFFTDescriptor {
-    pub fn new(mix: usize, channels: &[usize]) -> Self {
-        let mut channels_vec = SmallVec::with_capacity(channels.len());
-
-        channels_vec.extend_from_slice(channels);
-        channels_vec.sort();
-
-        // TODO: freeze channels_vec
-
+    pub fn new(mix: usize, channel: usize, dampening_factor_attack: f64, dampening_factor_release: f64) -> Self {
         Self {
             mix,
-            channels: channels_vec,
+            channel,
+            dampening_factor_attack: OrderedFloat(dampening_factor_attack),
+            dampening_factor_release: OrderedFloat(dampening_factor_release),
         }
     }
 }
 
+#[derive(Clone)]
+pub struct FFTResult {
+    batch_number: usize,
+    frequency_spectrum: Arc<Vec<f32>>,
+}
+
 pub struct GlobalStateAudioFFTMutable {
-    callbacks: Vec<Box<dyn Fn(&Vec<f32>) + Send + Sync>>,
     audio_output: Option<AudioOutput>,
+    sample_buffer: VecDeque<f32>,
+    frames_in_buffer: usize,
+    /// Set during `retrieve_result` to indicate that the analysis of the next
+    /// batch should be performed.
+    next_batch_scheduled: AtomicBool,
+    /// The result of the analysis.
+    result: Option<FFTResult>,
 }
 
 impl Default for GlobalStateAudioFFTMutable {
     fn default() -> Self {
         Self {
-            callbacks: Default::default(),
             audio_output: Default::default(),
+            sample_buffer: Default::default(),
+            frames_in_buffer: 0,
+            next_batch_scheduled: AtomicBool::new(true),
+            result: None,
         }
     }
 }
@@ -89,81 +104,165 @@ pub struct GlobalStateAudioFFT {
 }
 
 impl GlobalStateAudioFFT {
-    fn process_audio_data<'a>(self: &Arc<Self>, audio_data: AudioData<'a>) -> <Self as GlobalStateComponentType>::Result {
-        match audio_data.info().format() {
-            AudioFormatKind::PlanarF32 => {
-                let audio_data = audio_data.downcast::<AudioFormatPlanarF32>().unwrap();
-                let mut average = vec![0.0; audio_data.inner.frames() as usize];
+    fn get_samples_per_frame() -> usize {
+        let audio_info = ObsAudioInfo::get()
+            .expect("Audio info not accessible.");
+        let video_info = ObsVideoInfo::get()
+            .expect("Video info not accessible.");
+        let framerate = video_info.framerate();
 
-                self.descriptor.channels.iter().copied()
-                    .for_each(|channel| {
-                        audio_data.samples(channel).map(|samples| {
-                            let len = samples.len();
-                            let mut fft_data: Vec<Complex<f32>> = samples.map(|sample| {
-                                Complex::new(sample, 0.0)
-                            }).collect::<Vec<_>>();
-                            let fft = fourier::create_fft_f32(len);
+        (audio_info.samples_per_second() as usize * framerate.denominator as usize)
+            / framerate.numerator as usize
+    }
 
-                            fft.transform_in_place(&mut fft_data, Transform::SqrtScaledFft);
+    fn render_frames_to_time_elapsed(render_frames: usize) -> f64 {
+        let video_info = ObsVideoInfo::get()
+            .expect("Video info not accessible.");
+        let framerate = video_info.framerate();
 
-                            fft_data.into_iter().enumerate().for_each(|(sample_index, complex)| {
-                                let norm = complex.norm();
+        (render_frames as f64 * framerate.denominator as f64) / framerate.numerator as f64
+    }
 
-                                average[sample_index] += norm;
-                            });
-                        });
-                    });
+    fn perform_analysis(
+        samples: impl Iterator<Item=f32> + ExactSizeIterator,
+    ) -> Vec<f32> {
+        let len = samples.len();
+        let mut fft_data: Vec<Complex<f32>> = samples.map(|sample| {
+            Complex::new(sample, 0.0)
+        }).collect::<Vec<_>>();
+        let fft = fourier::create_fft_f32(len);
 
-                average.iter_mut().for_each(|value| *value = *value / self.descriptor.channels.len() as f32);
+        fft.transform_in_place(&mut fft_data, Transform::Fft);
 
-                return average
-            },
-            _ => {
-                eprintln!("Unsupported audio format.");
-                return Vec::new();
+        fft_data.into_iter().take(len / 2).map(|complex| {
+            // normalize according to https://www.sjsu.edu/people/burford.furman/docs/me120/FFT_tutorial_NI.pdf
+            (complex.norm() * 4.0 / len as f32).sqrt()
+        }).collect::<Vec<_>>()
+    }
+
+    fn process_audio_data<'a>(self: &Arc<Self>, audio_data: AudioData<'a, ()>) {
+        let mut mutable_write = self.mutable.write().unwrap();
+        let current_samples = audio_data.samples_normalized(self.descriptor.channel).unwrap();
+
+        mutable_write.sample_buffer.extend(current_samples);
+
+        if !mutable_write.next_batch_scheduled.load(Ordering::SeqCst) {
+            return;
+        }
+
+        let samples_per_frame = Self::get_samples_per_frame();
+        let render_frames_accumulated = mutable_write.sample_buffer.len() / samples_per_frame;
+
+        if render_frames_accumulated > 0 {
+            // Get rid of old data, if we lost some frames.
+            if render_frames_accumulated > 1 {
+                let render_frames_to_remove = render_frames_accumulated - 1;
+
+                println!("Skipping {} render frames in FFT calculation.", render_frames_to_remove);
+
+                let samples_to_remove = samples_per_frame * render_frames_to_remove;
+                mutable_write.sample_buffer.drain(0..samples_to_remove);
             }
+
+            let current_accumulated_samples = mutable_write.sample_buffer.drain(0..samples_per_frame);
+            let mut analysis_result = Self::perform_analysis(current_accumulated_samples);
+
+            // Dampen the result by mixing it with the result from the previous batch
+            if *self.descriptor.dampening_factor_attack > 0.0 || *self.descriptor.dampening_factor_release > 0.0 {
+                if let Some(previous_result) = mutable_write.result.as_ref() {
+                    let dampening_multiplier_attack = self.descriptor.dampening_factor_attack.powf(
+                        Self::render_frames_to_time_elapsed(render_frames_accumulated)
+                    ).clamp(0.0, 1.0) as f32;
+                    let dampening_multiplier_release = self.descriptor.dampening_factor_release.powf(
+                        Self::render_frames_to_time_elapsed(render_frames_accumulated)
+                    ).clamp(0.0, 1.0) as f32;
+
+                    analysis_result.iter_mut()
+                        .zip(previous_result.frequency_spectrum.iter())
+                        .for_each(move |(current, previous)| {
+                            let dampening_multiplier = if *current > *previous {
+                                dampening_multiplier_attack
+                            } else {
+                                dampening_multiplier_release
+                            };
+
+                            *current = dampening_multiplier * *previous + (1.0 - dampening_multiplier) * *current;
+                        })
+                }
+            }
+
+            let next_batch_number = mutable_write.result.as_ref()
+                .map(|result| result.batch_number + 1).unwrap_or(0);
+            mutable_write.result = Some(FFTResult {
+                batch_number: next_batch_number,
+                frequency_spectrum: Arc::new(analysis_result),
+            });
+            mutable_write.next_batch_scheduled.swap(false, Ordering::SeqCst);
         }
     }
 }
 
 impl GlobalStateComponentType for GlobalStateAudioFFT {
     type Descriptor = GlobalStateAudioFFTDescriptor;
-    type Result = Vec<f32>; // TODO
+    type Result = FFTResult;
 
-    fn create(descriptor: &Self::Descriptor) -> Self {
-        Self {
+    fn create(descriptor: &Self::Descriptor) -> Arc<Self> {
+        let audio = Audio::get();
+        let result = Arc::new(Self {
             descriptor: descriptor.clone(),
             mutable: Default::default(),
-        }
+        });
+
+        let audio_output = audio.connect_output(
+            descriptor.mix,
+            {
+                let self_cloned = result.clone();
+
+                Box::new(move |audio_data| {
+                    Self::process_audio_data(&self_cloned, audio_data);
+                })
+            },
+        );
+
+        result.mutable.write().unwrap().audio_output = Some(audio_output);
+
+        result
     }
 
-    fn register_callback(self: &Arc<Self>, callback: Box<dyn Fn(&Self::Result) + Send + Sync>) {
-        let mut mutable_write = self.mutable.write().unwrap();
-        let connect_output = mutable_write.callbacks.len() == 0;
+    fn retrieve_result(self: &Arc<Self>) -> Option<Self::Result> {
+        let mutable_read = self.mutable.read().unwrap();
 
-        mutable_write.callbacks.push(callback);
-
-        if connect_output {
-            let audio = Audio::get();
-
-            mutable_write.audio_output = Some(audio.connect_output(
-                self.descriptor.mix,
-                {
-                    let mutable = self.mutable.clone();
-                    let self_cloned = self.clone();
-
-                    Box::new(move |audio_data| {
-                        let result = Self::process_audio_data(&self_cloned, audio_data);
-                        let mutable_read = mutable.read().unwrap();
-
-                        for callback in &mutable_read.callbacks {
-                            (callback)(&result);
-                        }
-                    })
-                },
-            ))
-        }
+        mutable_read.next_batch_scheduled.store(true, Ordering::SeqCst);
+        mutable_read.result.clone()
     }
+
+    // fn register_callback(self: &Arc<Self>, callback: Box<dyn Fn(&Self::Result) + Send + Sync>) {
+    //     let mut mutable_write = self.mutable.write().unwrap();
+    //     let connect_output = mutable_write.callbacks.len() == 0;
+
+    //     mutable_write.callbacks.push(callback);
+
+    //     if connect_output {
+    //         let audio = Audio::get();
+
+    //         mutable_write.audio_output = Some(audio.connect_output(
+    //             self.descriptor.mix,
+    //             {
+    //                 let mutable = self.mutable.clone();
+    //                 let self_cloned = self.clone();
+
+    //                 Box::new(move |audio_data| {
+    //                     let result = Self::process_audio_data(&self_cloned, audio_data);
+    //                     let mutable_read = mutable.read().unwrap();
+
+    //                     for callback in &mutable_read.callbacks {
+    //                         (callback)(&result);
+    //                     }
+    //                 })
+    //             },
+    //         ))
+    //     }
+    // }
 }
 
 /// A component of the global state, which is dynamically allocated and
@@ -200,7 +299,7 @@ impl<T: GlobalStateComponentType> GlobalStateComponent<T> {
                 return strong_ptr;
             }
 
-            let strong_ptr: Arc<T> = Arc::new(T::create(&self.descriptor));
+            let strong_ptr: Arc<T> = T::create(&self.descriptor);
 
             *weak_ptr_write = Arc::downgrade(&strong_ptr.clone());
 
@@ -261,6 +360,7 @@ struct Data {
     effect: Option<PreparedEffect>,
     creation: Instant,
 
+    audio_counter: Arc<AtomicUsize>,
     audio_fft: Arc<GlobalStateAudioFFT>,
     texture_fft: Arc<Mutex<Option<TextureDescriptor>>>,
 
@@ -275,36 +375,43 @@ impl Data {
         let settings_update_requested = Arc::new(AtomicBool::new(true));
         let audio_fft = GLOBAL_STATE.request_audio_fft(&GlobalStateAudioFFTDescriptor::new(
             0, // mix
-            &[0, 1], // channels
+            0, // channel
+            0.0, // dampening attack
+            // 0.1, // dampening release
+            0.0, // dampening release
         ));
         let texture_fft: Arc<Mutex<Option<TextureDescriptor>>> = Default::default();
+        let audio_counter = Arc::new(AtomicUsize::new(0));
 
-        audio_fft.register_callback({
-            let texture_fft = texture_fft.clone();
+//         audio_fft.register_callback({
+//             let texture_fft = texture_fft.clone();
+//             let audio_counter = audio_counter.clone();
 
-            Box::new(move |result| {
-                let mut texture_fft = texture_fft.lock().unwrap();
-                let texture_data = unsafe {
-                    std::slice::from_raw_parts::<u8>(
-                        result.as_ptr() as *const _,
-                        result.len() * std::mem::size_of::<f32>(),
-                    )
-                }.iter().copied().collect::<Vec<_>>();
-                let texture = TextureDescriptor {
-                    dimensions: [result.len(), 1],
-                    color_format: ColorFormatKind::R32F,
-                    levels: smallvec![texture_data],
-                    flags: 0,
-                };
+//             Box::new(move |result| {
+//                 audio_counter.fetch_add(1, Ordering::SeqCst);
+//                 let mut texture_fft = texture_fft.lock().unwrap();
+//                 let texture_data = unsafe {
+//                     std::slice::from_raw_parts::<u8>(
+//                         result.as_ptr() as *const _,
+//                         result.len() * std::mem::size_of::<f32>(),
+//                     )
+//                 }.iter().copied().collect::<Vec<_>>();
+//                 let texture = TextureDescriptor {
+//                     dimensions: [result.len(), 1],
+//                     color_format: ColorFormatKind::R32F,
+//                     levels: smallvec![texture_data],
+//                     flags: 0,
+//                 };
 
-                *texture_fft = Some(texture);
-            })
-        });
+//                 *texture_fft = Some(texture);
+//             })
+//         });
 
         Self {
             source,
             effect: None,
             creation: Instant::now(),
+            audio_counter,
             audio_fft,
             texture_fft,
             property_shader: PropertyDescriptor {
@@ -397,14 +504,23 @@ impl VideoTickSource<Data> for ScrollFocusFilter {
                 data.source.get_base_height() as i32,
             ]);
 
-            {
-                let mut texture_fft = data.texture_fft.lock().unwrap();
+            if let Some(fft_result) = data.audio_fft.retrieve_result() {
+                dbg!(fft_result.batch_number);
+                let frequency_spectrum = &fft_result.frequency_spectrum;
+                let texture_data = unsafe {
+                    std::slice::from_raw_parts::<u8>(
+                        frequency_spectrum.as_ptr() as *const _,
+                        frequency_spectrum.len() * std::mem::size_of::<f32>(),
+                    )
+                }.iter().copied().collect::<Vec<_>>();
+                let texture_fft = TextureDescriptor {
+                    dimensions: [frequency_spectrum.len(), 1],
+                    color_format: ColorFormatKind::R32F,
+                    levels: smallvec![texture_data],
+                    flags: 0,
+                };
 
-                if let Some(texture_fft) = texture_fft.take() {
-                    // println!("Preparing texture");
-                    // dbg!(&texture_fft.levels[0][0..10]);
-                    params.texture_fft.prepare_value(texture_fft);
-                }
+                params.texture_fft.prepare_value(texture_fft);
             }
 
             {

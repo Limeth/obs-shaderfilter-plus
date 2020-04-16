@@ -188,12 +188,14 @@ impl GlobalStateAudioFFT {
 
     fn process_audio_data<'a>(self: &Arc<Self>, audio_data: AudioData<'a, ()>) {
         let mut mutable_write = self.mutable.write().unwrap();
+
         let current_samples = if let Some(samples) = audio_data.samples_normalized(self.descriptor.channel) {
             samples
         } else {
             return;
         };
 
+        // FIXME: early returns make this accumulate data indefinitely
         mutable_write.sample_buffer.extend(current_samples);
 
         if !mutable_write.next_batch_scheduled.load(Ordering::SeqCst) {

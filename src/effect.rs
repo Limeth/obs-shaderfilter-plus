@@ -193,11 +193,18 @@ impl<T: EffectParamType> EffectParam<T> {
     }
 }
 
-pub trait EffectParamCustom {
+pub trait EffectParamCustom: Sized {
     type ShaderParamType: ShaderParamType;
     type PropertyDescriptorSpecialization: PropertyDescriptorSpecialization;
 
-    fn new<'a>(param: GraphicsContextDependentEnabled<'a, GraphicsEffectParamTyped<Self::ShaderParamType>>, settings: &mut SettingsContext) -> Self;
+    fn new<'a>(
+        param: GraphicsContextDependentEnabled<'a, GraphicsEffectParamTyped<Self::ShaderParamType>>,
+        identifier: &str,
+        settings: &mut SettingsContext,
+        preprocess_result: &PreprocessResult,
+    ) -> Result<Self, Cow<'static, str>>;
+    fn add_properties(&self, properties: &mut Properties);
+    fn prepare_values(&mut self);
     fn stage_value<'a>(&mut self, graphics_context: &'a GraphicsContext);
     fn assign_value<'a>(&mut self, graphics_context: &'a FilterContext);
     fn enable_and_drop(self, graphics_context: &GraphicsContext);
@@ -205,29 +212,45 @@ pub trait EffectParamCustom {
 
 pub struct EffectParamCustomBool {
     pub effect_param: EffectParamBool,
-    pub property_descriptor: PropertyDescriptor<PropertyDescriptorSpecializationBool>,
+    pub property: LoadedValueTypeProperty<LoadedValueTypePropertyDescriptorBool>
 }
 
 impl EffectParamCustom for EffectParamCustomBool {
     type ShaderParamType = ShaderParamTypeBool;
     type PropertyDescriptorSpecialization = PropertyDescriptorSpecializationBool;
 
-    fn new<'a>(param: GraphicsContextDependentEnabled<'a, GraphicsEffectParamTyped<Self::ShaderParamType>>, settings: &mut SettingsContext) -> Self {
-        let default_value = *param.get_param_value_default().unwrap_or(&false);
-        let mut result = Self {
-            property_descriptor: PropertyDescriptor {
-                name: CString::new(param.inner.name()).unwrap(),
-                description: CString::new(param.inner.name()).unwrap(),
-                specialization: Self::PropertyDescriptorSpecialization {},
+    fn new<'a>(
+        param: GraphicsContextDependentEnabled<'a, GraphicsEffectParamTyped<Self::ShaderParamType>>,
+        identifier: &str,
+        settings: &mut SettingsContext,
+        preprocess_result: &PreprocessResult,
+    ) -> Result<Self, Cow<'static, str>> {
+        let property = <LoadedValueTypeProperty<_> as LoadedValueType>::from(
+            LoadedValueTypePropertyArgs {
+                allow_definitions_in_source: true,
+                default_value: *param.get_param_value_default().unwrap_or(&false),
+                default_descriptor_specialization: PropertyDescriptorSpecializationBool {},
             },
-            effect_param: EffectParam::new(param.disable()),
-        };
-        let loaded_value = settings.get_property_value(&result.property_descriptor, &default_value);
+            identifier,
+            None,
+            preprocess_result,
+            settings,
+        )?;
+        let mut effect_param = EffectParam::new(param.disable());
 
-        result.effect_param.prepare_value(loaded_value);
+        effect_param.prepare_value(property.get_value());
 
-        result
+        Ok(Self {
+            property,
+            effect_param,
+        })
     }
+
+    fn add_properties(&self, properties: &mut Properties) {
+        self.property.add_properties(properties);
+    }
+
+    fn prepare_values(&mut self) {}
 
     fn stage_value<'a>(&mut self, graphics_context: &'a GraphicsContext) {
         self.effect_param.stage_value(graphics_context);
@@ -244,34 +267,50 @@ impl EffectParamCustom for EffectParamCustomBool {
 
 pub struct EffectParamCustomInt {
     pub effect_param: EffectParamInt,
-    pub property_descriptor: PropertyDescriptor<PropertyDescriptorSpecializationI32>,
+    pub property: LoadedValueTypeProperty<LoadedValueTypePropertyDescriptorI32>
 }
 
 impl EffectParamCustom for EffectParamCustomInt {
     type ShaderParamType = ShaderParamTypeInt;
     type PropertyDescriptorSpecialization = PropertyDescriptorSpecializationI32;
 
-    fn new<'a>(param: GraphicsContextDependentEnabled<'a, GraphicsEffectParamTyped<Self::ShaderParamType>>, settings: &mut SettingsContext) -> Self {
-        let default_value = *param.get_param_value_default().unwrap_or(&0);
-        let mut result = Self {
-            property_descriptor: PropertyDescriptor {
-                name: CString::new(param.inner.name()).unwrap(),
-                description: CString::new(param.inner.name()).unwrap(),
-                specialization: Self::PropertyDescriptorSpecialization {
+    fn new<'a>(
+        param: GraphicsContextDependentEnabled<'a, GraphicsEffectParamTyped<Self::ShaderParamType>>,
+        identifier: &str,
+        settings: &mut SettingsContext,
+        preprocess_result: &PreprocessResult,
+    ) -> Result<Self, Cow<'static, str>> {
+        let property = <LoadedValueTypeProperty<_> as LoadedValueType>::from(
+            LoadedValueTypePropertyArgs {
+                allow_definitions_in_source: true,
+                default_value: *param.get_param_value_default().unwrap_or(&0),
+                default_descriptor_specialization: Self::PropertyDescriptorSpecialization {
                     min: std::i32::MIN,
                     max: std::i32::MAX,
                     step: 1,
                     slider: false,
                 },
             },
-            effect_param: EffectParam::new(param.disable()),
-        };
-        let loaded_value = settings.get_property_value(&result.property_descriptor, &default_value);
+            identifier,
+            None,
+            preprocess_result,
+            settings,
+        )?;
+        let mut effect_param = EffectParam::new(param.disable());
 
-        result.effect_param.prepare_value(loaded_value);
+        effect_param.prepare_value(property.get_value());
 
-        result
+        Ok(Self {
+            property,
+            effect_param,
+        })
     }
+
+    fn add_properties(&self, properties: &mut Properties) {
+        self.property.add_properties(properties);
+    }
+
+    fn prepare_values(&mut self) {}
 
     fn stage_value<'a>(&mut self, graphics_context: &'a GraphicsContext) {
         self.effect_param.stage_value(graphics_context);
@@ -288,34 +327,50 @@ impl EffectParamCustom for EffectParamCustomInt {
 
 pub struct EffectParamCustomFloat {
     pub effect_param: EffectParamFloat,
-    pub property_descriptor: PropertyDescriptor<PropertyDescriptorSpecializationF64>,
+    pub property: LoadedValueTypeProperty<LoadedValueTypePropertyDescriptorF64>
 }
 
 impl EffectParamCustom for EffectParamCustomFloat {
     type ShaderParamType = ShaderParamTypeFloat;
     type PropertyDescriptorSpecialization = PropertyDescriptorSpecializationF64;
 
-    fn new<'a>(param: GraphicsContextDependentEnabled<'a, GraphicsEffectParamTyped<Self::ShaderParamType>>, settings: &mut SettingsContext) -> Self {
-        let default_value = *param.get_param_value_default().unwrap_or(&0.0) as f64;
-        let mut result = Self {
-            property_descriptor: PropertyDescriptor {
-                name: CString::new(param.inner.name()).unwrap(),
-                description: CString::new(param.inner.name()).unwrap(),
-                specialization: Self::PropertyDescriptorSpecialization {
+    fn new<'a>(
+        param: GraphicsContextDependentEnabled<'a, GraphicsEffectParamTyped<Self::ShaderParamType>>,
+        identifier: &str,
+        settings: &mut SettingsContext,
+        preprocess_result: &PreprocessResult,
+    ) -> Result<Self, Cow<'static, str>> {
+        let property = <LoadedValueTypeProperty<_> as LoadedValueType>::from(
+            LoadedValueTypePropertyArgs {
+                allow_definitions_in_source: true,
+                default_value: *param.get_param_value_default().unwrap_or(&0.0) as f64,
+                default_descriptor_specialization: Self::PropertyDescriptorSpecialization {
                     min: std::f64::MIN,
                     max: std::f64::MAX,
                     step: 0.1,
                     slider: false,
                 },
             },
-            effect_param: EffectParam::new(param.disable()),
-        };
-        let loaded_value = settings.get_property_value(&result.property_descriptor, &default_value);
+            identifier,
+            None,
+            preprocess_result,
+            settings,
+        )?;
+        let mut effect_param = EffectParam::new(param.disable());
 
-        result.effect_param.prepare_value(loaded_value as f32);
+        effect_param.prepare_value(property.get_value() as f32);
 
-        result
+        Ok(Self {
+            property,
+            effect_param,
+        })
     }
+
+    fn add_properties(&self, properties: &mut Properties) {
+        self.property.add_properties(properties);
+    }
+
+    fn prepare_values(&mut self) {}
 
     fn stage_value<'a>(&mut self, graphics_context: &'a GraphicsContext) {
         self.effect_param.stage_value(graphics_context);
@@ -330,31 +385,47 @@ impl EffectParamCustom for EffectParamCustomFloat {
     }
 }
 
-pub struct EffectParamCustomVec4 {
+pub struct EffectParamCustomColor {
     pub effect_param: EffectParamVec4,
-    pub property_descriptor: PropertyDescriptor<PropertyDescriptorSpecializationColor>,
+    pub property: LoadedValueTypeProperty<LoadedValueTypePropertyDescriptorColor>
 }
 
-impl EffectParamCustom for EffectParamCustomVec4 {
+impl EffectParamCustom for EffectParamCustomColor {
     type ShaderParamType = ShaderParamTypeVec4;
     type PropertyDescriptorSpecialization = PropertyDescriptorSpecializationColor;
 
-    fn new<'a>(param: GraphicsContextDependentEnabled<'a, GraphicsEffectParamTyped<Self::ShaderParamType>>, settings: &mut SettingsContext) -> Self {
-        let default_value = *param.get_param_value_default().unwrap_or(&[0.0; 4]);
-        let mut result = Self {
-            property_descriptor: PropertyDescriptor {
-                name: CString::new(param.inner.name()).unwrap(),
-                description: CString::new(param.inner.name()).unwrap(),
-                specialization: Self::PropertyDescriptorSpecialization {},
+    fn new<'a>(
+        param: GraphicsContextDependentEnabled<'a, GraphicsEffectParamTyped<Self::ShaderParamType>>,
+        identifier: &str,
+        settings: &mut SettingsContext,
+        preprocess_result: &PreprocessResult,
+    ) -> Result<Self, Cow<'static, str>> {
+        let property = <LoadedValueTypeProperty<_> as LoadedValueType>::from(
+            LoadedValueTypePropertyArgs {
+                allow_definitions_in_source: true,
+                default_value: Color(*param.get_param_value_default().unwrap_or(&[0.0; 4])),
+                default_descriptor_specialization: Self::PropertyDescriptorSpecialization {},
             },
-            effect_param: EffectParam::new(param.disable()),
-        };
-        let loaded_value = settings.get_property_value(&result.property_descriptor, &default_value);
+            identifier,
+            None,
+            preprocess_result,
+            settings,
+        )?;
+        let mut effect_param = EffectParam::new(param.disable());
 
-        result.effect_param.prepare_value(loaded_value);
+        effect_param.prepare_value((property.get_value() as Color).into());
 
-        result
+        Ok(Self {
+            property,
+            effect_param,
+        })
     }
+
+    fn add_properties(&self, properties: &mut Properties) {
+        self.property.add_properties(properties);
+    }
+
+    fn prepare_values(&mut self) {}
 
     fn stage_value<'a>(&mut self, graphics_context: &'a GraphicsContext) {
         self.effect_param.stage_value(graphics_context);
@@ -705,6 +776,52 @@ impl LoadedValueTypePropertyDescriptor for LoadedValueTypePropertyDescriptorI32 
     }
 }
 
+pub struct LoadedValueTypePropertyDescriptorColor {
+    descriptor: PropertyDescriptor<PropertyDescriptorSpecializationColor>,
+    description: LoadedValueTypeSource<String>,
+}
+
+impl LoadedValueTypePropertyDescriptor for LoadedValueTypePropertyDescriptorColor {
+    type Specialization = PropertyDescriptorSpecializationColor;
+
+    fn from_identifier(
+        args: LoadedValueTypePropertyDescriptorArgs<Self::Specialization>,
+        identifier: &str,
+        preprocess_result: &PreprocessResult,
+        settings: &mut SettingsContext,
+    ) -> Result<Self, Cow<'static, str>> {
+        let description = <LoadedValueTypeSource::<String> as LoadedValueType>::from(
+            LoadedValueTypeSourceArgs {
+                default_value: Some(identifier.to_string()),
+            },
+            identifier,
+            Some("description"),
+            preprocess_result,
+            settings,
+        )?;
+        let descriptor = PropertyDescriptor {
+            // we can safely unwrap loaded values, because default values were specified
+            name: CString::new(identifier).unwrap(),
+            description: CString::new(description.get_value().unwrap()).unwrap(),
+            specialization: PropertyDescriptorSpecializationColor {},
+        };
+
+        Ok(Self {
+            descriptor,
+            description,
+        })
+    }
+
+    fn add_properties(&self, properties: &mut Properties) {
+        self.description.add_properties(properties);
+        properties.add_property(&self.descriptor);
+    }
+
+    fn get_value(&self) -> PropertyDescriptor<Self::Specialization> {
+        self.descriptor.clone()
+    }
+}
+
 pub struct LoadedValueTypePropertyDescriptorBool {
     descriptor: PropertyDescriptor<PropertyDescriptorSpecializationBool>,
     description: LoadedValueTypeSource<String>,
@@ -964,14 +1081,14 @@ impl EffectParamCustomFFT {
         })
     }
 
-    pub fn add_properties(&self, properties: &mut Properties) {
+    fn add_properties(&self, properties: &mut Properties) {
         self.property_mix.add_properties(properties);
         self.property_channel.add_properties(properties);
         self.property_dampening_factor_attack.add_properties(properties);
         self.property_dampening_factor_release.add_properties(properties);
     }
 
-    fn prepare_values<'a>(&mut self) {
+    fn prepare_values(&mut self) {
         let fft_result = if let Some(result) = self.audio_fft.retrieve_result() {
             result
         } else {
@@ -1012,13 +1129,17 @@ pub struct EffectParamsCustom {
     pub params_bool: Vec<EffectParamCustomBool>,
     pub params_float: Vec<EffectParamCustomFloat>,
     pub params_int: Vec<EffectParamCustomInt>,
-    pub params_vec4: Vec<EffectParamCustomVec4>,
+    pub params_vec4: Vec<EffectParamCustomColor>,
     pub params_fft: Vec<EffectParamCustomFFT>,
     // TODO: Textures
 }
 
 impl EffectParamsCustom {
     pub fn prepare_values(&mut self) {
+        self.params_bool.iter_mut().for_each(|param| param.prepare_values());
+        self.params_float.iter_mut().for_each(|param| param.prepare_values());
+        self.params_int.iter_mut().for_each(|param| param.prepare_values());
+        self.params_vec4.iter_mut().for_each(|param| param.prepare_values());
         self.params_fft.iter_mut().for_each(|param| param.prepare_values());
     }
 
@@ -1047,10 +1168,10 @@ impl EffectParamsCustom {
     }
 
     pub fn add_properties(&self, properties: &mut Properties) {
-        self.params_bool.iter().for_each(|param| properties.add_property(&param.property_descriptor));
-        self.params_float.iter().for_each(|param| properties.add_property(&param.property_descriptor));
-        self.params_int.iter().for_each(|param| properties.add_property(&param.property_descriptor));
-        self.params_vec4.iter().for_each(|param| properties.add_property(&param.property_descriptor));
+        self.params_bool.iter().for_each(|param| param.add_properties(properties));
+        self.params_float.iter().for_each(|param| param.add_properties(properties));
+        self.params_int.iter().for_each(|param| param.add_properties(properties));
+        self.params_vec4.iter().for_each(|param| param.add_properties(properties));
         self.params_fft.iter().for_each(|param| param.add_properties(properties));
     }
 
@@ -1086,10 +1207,10 @@ impl EffectParamsCustom {
 
             match param.param_type() {
                 Unknown => throw!("Cannot add an effect param of unknown type. Make sure to use HLSL type names for uniform variables."),
-                Bool  => self.params_bool.push(EffectParamCustomBool::new(param.downcast().unwrap(), settings)),
-                Float => self.params_float.push(EffectParamCustomFloat::new(param.downcast().unwrap(), settings)),
-                Int   => self.params_int.push(EffectParamCustomInt::new(param.downcast().unwrap(), settings)),
-                Vec4  => self.params_vec4.push(EffectParamCustomVec4::new(param.downcast().unwrap(), settings)),
+                Bool  => self.params_bool.push(EffectParamCustomBool::new(param.downcast().unwrap(), &param_name, settings, preprocess_result)?),
+                Float => self.params_float.push(EffectParamCustomFloat::new(param.downcast().unwrap(), &param_name, settings, preprocess_result)?),
+                Int   => self.params_int.push(EffectParamCustomInt::new(param.downcast().unwrap(), &param_name, settings, preprocess_result)?),
+                Vec4  => self.params_vec4.push(EffectParamCustomColor::new(param.downcast().unwrap(), &param_name, settings, preprocess_result)?),
                 Vec2 | Vec3 | IVec2 | IVec3 | IVec4 | Mat4 => {
                     throw!("Multi-component types as effect params are not yet supported.");
                 },

@@ -186,10 +186,17 @@ impl GlobalStateAudioFFT {
         }).collect::<Vec<_>>()
     }
 
-    fn process_audio_data<'a>(self: &Arc<Self>, audio_data: AudioData<'a, ()>) {
-        let mut mutable_write = self.mutable.write().unwrap();
+    fn process_audio_data<'a>(this: &Weak<Self>, audio_data: AudioData<'a, ()>) {
+        let this = if let Some(this) = Weak::upgrade(this) {
+            this
+        } else {
+            // The audio FFT component no longer exists, bail.
+            return;
+        };
 
-        let current_samples = if let Some(samples) = audio_data.samples_normalized(self.descriptor.channel) {
+        let mut mutable_write = this.mutable.write().unwrap();
+
+        let current_samples = if let Some(samples) = audio_data.samples_normalized(this.descriptor.channel) {
             samples
         } else {
             // No samples captured, bail.
@@ -216,7 +223,7 @@ impl GlobalStateAudioFFT {
 
         if render_frames_accumulated > 0 {
             if mutable_write.window.len() != samples_per_frame {
-                mutable_write.window = Arc::new(self.descriptor.window_function.generate_coefficients(samples_per_frame));
+                mutable_write.window = Arc::new(this.descriptor.window_function.generate_coefficients(samples_per_frame));
             }
 
             let window = mutable_write.window.clone();
@@ -224,12 +231,12 @@ impl GlobalStateAudioFFT {
             let mut analysis_result = Self::perform_analysis(current_accumulated_samples, &window);
 
             // Dampen the result by mixing it with the result from the previous batch
-            if *self.descriptor.dampening_factor_attack > 0.0 || *self.descriptor.dampening_factor_release > 0.0 {
+            if *this.descriptor.dampening_factor_attack > 0.0 || *this.descriptor.dampening_factor_release > 0.0 {
                 if let Some(previous_result) = mutable_write.result.as_ref() {
-                    let dampening_multiplier_attack = self.descriptor.dampening_factor_attack.powf(
+                    let dampening_multiplier_attack = this.descriptor.dampening_factor_attack.powf(
                         Self::render_frames_to_time_elapsed(render_frames_accumulated)
                     ).clamp(0.0, 1.0) as f32;
-                    let dampening_multiplier_release = self.descriptor.dampening_factor_release.powf(
+                    let dampening_multiplier_release = this.descriptor.dampening_factor_release.powf(
                         Self::render_frames_to_time_elapsed(render_frames_accumulated)
                     ).clamp(0.0, 1.0) as f32;
 
@@ -272,7 +279,7 @@ impl GlobalStateComponentType for GlobalStateAudioFFT {
         let audio_output = audio.connect_output(
             descriptor.mix,
             {
-                let self_cloned = result.clone();
+                let self_cloned = Arc::downgrade(&result);
 
                 Box::new(move |audio_data| {
                     Self::process_audio_data(&self_cloned, audio_data);
@@ -291,34 +298,6 @@ impl GlobalStateComponentType for GlobalStateAudioFFT {
         mutable_read.next_batch_scheduled.store(true, Ordering::SeqCst);
         mutable_read.result.clone()
     }
-
-    // fn register_callback(self: &Arc<Self>, callback: Box<dyn Fn(&Self::Result) + Send + Sync>) {
-    //     let mut mutable_write = self.mutable.write().unwrap();
-    //     let connect_output = mutable_write.callbacks.len() == 0;
-
-    //     mutable_write.callbacks.push(callback);
-
-    //     if connect_output {
-    //         let audio = Audio::get();
-
-    //         mutable_write.audio_output = Some(audio.connect_output(
-    //             self.descriptor.mix,
-    //             {
-    //                 let mutable = self.mutable.clone();
-    //                 let self_cloned = self.clone();
-
-    //                 Box::new(move |audio_data| {
-    //                     let result = Self::process_audio_data(&self_cloned, audio_data);
-    //                     let mutable_read = mutable.read().unwrap();
-
-    //                     for callback in &mutable_read.callbacks {
-    //                         (callback)(&result);
-    //                     }
-    //                 })
-    //             },
-    //         ))
-    //     }
-    // }
 }
 
 /// A component of the global state, which is dynamically allocated and
@@ -402,6 +381,7 @@ impl GlobalState {
             let component_wrapper = GlobalStateComponent::new(descriptor.clone());
             let component = component_wrapper.get_component();
 
+            audio_ffts_write.retain(|_, component| component.try_get_component().is_some());
             audio_ffts_write.insert(descriptor.clone(), component_wrapper);
 
             component
@@ -600,7 +580,13 @@ impl UpdateSource<Data> for ScrollFocusFilter {
             let shader_path = settings.get_property_value(&data.property_shader, &PathBuf::new());
             let mut shader_file = File::open(&shader_path)
                 .map_err(|_| {
-                    data.effect = None;
+                    if let Some(effect) = data.effect.take() {
+                        let graphics_context = GraphicsContext::enter()
+                            .expect("Could not enter a graphics context.");
+
+                        effect.enable_and_drop(&graphics_context);
+                    }
+
                     format!("Shader not found at the specified path: {:?}", &shader_path)
                 })?;
 
@@ -665,11 +651,14 @@ impl UpdateSource<Data> for ScrollFocusFilter {
                 params.custom.add_param(custom_param, settings, &preprocess_result)?;
             }
 
-            data.effect.replace(PreparedEffect {
+            // Drop old effect before the new one is created.
+            if let Some(old_effect) = data.effect.take() {
+                old_effect.enable_and_drop(&graphics_context);
+            }
+
+            data.effect = Some(PreparedEffect {
                 effect: effect.disable(),
                 params,
-            }).map(|original| {
-                original.enable_and_drop(&graphics_context);
             });
 
             data.source.update_source_properties();

@@ -190,6 +190,9 @@ impl<T: EffectParamType> EffectParam<T> {
 
     fn enable_and_drop(self, graphics_context: &GraphicsContext) {
         self.param.enable(graphics_context);
+        if let Some(staged_value) = self.staged_value {
+            staged_value.enable(graphics_context);
+        }
     }
 }
 

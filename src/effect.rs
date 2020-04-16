@@ -1,3 +1,4 @@
+use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::borrow::Cow;
@@ -7,16 +8,23 @@ use std::fs::File;
 use std::ffi::{CStr, CString};
 use std::io::Read;
 use ammolite_math::*;
+use obs_sys::{
+    MAX_AUDIO_MIXES,
+    MAX_AUDIO_CHANNELS,
+};
 use obs_wrapper::{
     graphics::*,
     obs_register_module,
     prelude::*,
     source::*,
     context::*,
+    audio::*,
 };
 use smallvec::{SmallVec, smallvec};
 use regex::Regex;
 use paste::item;
+use crate::preprocessor::*;
+use crate::*;
 
 /// Used to convert cloneable values into `ShaderParamType::RustType`.
 pub trait EffectParamType {
@@ -361,21 +369,257 @@ impl EffectParamCustom for EffectParamCustomVec4 {
     }
 }
 
+pub trait BuiltinType {
+    fn name() -> &'static str;
+
+    fn format_builtin_field(field_name: &str, property_name: Option<&str>) -> String {
+        if let Some(property_name) = property_name {
+            format!("builtin_{}_{}_{}", Self::name(), field_name, property_name)
+        } else {
+            format!("builtin_{}_{}", Self::name(), field_name)
+        }
+    }
+
+    fn new_property<T>(field_name: &str, property_name: &str, specialization: T) -> PropertyDescriptor<T>
+        where T: PropertyDescriptorSpecialization,
+    {
+        PropertyDescriptor {
+            name: CString::new(Self::format_builtin_field(field_name, Some(property_name))).unwrap(),
+            description: CString::new(format!("{} {}", field_name, property_name)).unwrap(),
+            specialization,
+        }
+    }
+}
+
+/// A simple property. Its value is assigned from either the shader source code (hardcoded)
+/// or from the effect settings properties.
+pub struct PropertyKind<T>
+where T: ValuePropertyDescriptorSpecialization,
+      <T as ValuePropertyDescriptorSpecialization>::ValueType: FromStr + Default + Clone,
+{
+    setting: Option<PropertyDescriptor<T>>,
+    value: <T as ValuePropertyDescriptorSpecialization>::ValueType,
+}
+
+impl<T> PropertyKind<T>
+where T: ValuePropertyDescriptorSpecialization,
+      <T as ValuePropertyDescriptorSpecialization>::ValueType: FromStr + Default + Clone,
+{
+    pub fn from<B: BuiltinType>(
+        allow_definitions_in_source: bool,
+        default_value: <T as ValuePropertyDescriptorSpecialization>::ValueType,
+        field_name: &str,
+        property_name: &str,
+        specialization: T,
+        preprocess_result: &PreprocessResult,
+        settings: &mut SettingsContext,
+    ) -> Result<Self, Cow<'static, str>> {
+        let setting_name = B::format_builtin_field(field_name, Some(property_name));
+        let hardcoded_value = preprocess_result.parse::<<T as ValuePropertyDescriptorSpecialization>::ValueType>(field_name, property_name);
+
+        Ok(match hardcoded_value {
+            Some(result) if allow_definitions_in_source => {
+                Self {
+                    setting: None,
+                    value: result?,
+                }
+            },
+            _ => {
+                let property_name_default = format!("{}_default", property_name);
+                let default_value = if allow_definitions_in_source {
+                    dbg!(preprocess_result.parse::<<T as ValuePropertyDescriptorSpecialization>::ValueType>(field_name, &property_name_default)
+                    .transpose()?)
+                } else {
+                    None
+                }.unwrap_or(default_value);
+                let setting = B::new_property(field_name, property_name, specialization);
+                let loaded_value = settings.get_property_value(&setting, &default_value);
+
+                Self {
+                    setting: Some(setting),
+                    value: loaded_value,
+                }
+            }
+        })
+    }
+
+    pub fn add_properties(&self, properties: &mut Properties) {
+        if let &Some(ref setting) = &self.setting {
+            properties.add_property(setting);
+        }
+    }
+
+    pub fn get_value(&self) -> <T as ValuePropertyDescriptorSpecialization>::ValueType {
+        self.value.clone()
+    }
+}
+
+pub struct EffectParamCustomFFT {
+    pub effect_param: EffectParamTexture,
+    pub audio_fft: Arc<GlobalStateAudioFFT>,
+    pub property_mix: PropertyKind<PropertyDescriptorSpecializationI32>,
+    pub property_channel: PropertyKind<PropertyDescriptorSpecializationI32>,
+    pub property_dampening_factor_attack: PropertyKind<PropertyDescriptorSpecializationF64>,
+    pub property_dampening_factor_release: PropertyKind<PropertyDescriptorSpecializationF64>,
+}
+
+impl BuiltinType for EffectParamCustomFFT {
+    fn name() -> &'static str {
+        "texture_fft"
+    }
+}
+
+impl EffectParamCustomFFT {
+    fn new<'a>(
+        param: GraphicsContextDependentEnabled<'a, GraphicsEffectParamTyped<ShaderParamTypeTexture>>,
+        field_name: &str,
+        settings: &mut SettingsContext,
+        preprocess_result: &PreprocessResult,
+    ) -> Result<Self, Cow<'static, str>> {
+        let property_mix = PropertyKind::from::<Self>(
+            false,
+            1,
+            field_name,
+            "mix",
+            // TODO: make customizable using macros
+            PropertyDescriptorSpecializationI32 {
+                min: 1,
+                max: MAX_AUDIO_MIXES as i32,
+                step: 1,
+                slider: false,
+            },
+            preprocess_result,
+            settings,
+        )?;
+        let property_channel = PropertyKind::from::<Self>(
+            false,
+            1,
+            field_name,
+            "channel",
+            // TODO: make customizable using macros
+            PropertyDescriptorSpecializationI32 {
+                min: 1,
+                max: 2, // FIXME: Currently causes crashes when out of bounds MAX_AUDIO_CHANNELS as i32,
+                step: 1,
+                slider: false,
+            },
+            preprocess_result,
+            settings,
+        )?;
+        let property_dampening_factor_attack = PropertyKind::from::<Self>(
+            true,
+            0.0,
+            field_name,
+            "dampening_factor_attack",
+            // TODO: make customizable using macros
+            PropertyDescriptorSpecializationF64 {
+                min: 0.0,
+                max: 0.0,
+                step: 0.1,
+                slider: false,
+            },
+            preprocess_result,
+            settings,
+        )?;
+        let property_dampening_factor_release = PropertyKind::from::<Self>(
+            true,
+            0.0,
+            field_name,
+            "dampening_factor_release",
+            // TODO: make customizable using macros
+            PropertyDescriptorSpecializationF64 {
+                min: 0.0,
+                max: 0.0,
+                step: 0.1,
+                slider: false,
+            },
+            preprocess_result,
+            settings,
+        )?;
+
+        let audio_fft_descriptor = GlobalStateAudioFFTDescriptor::new(
+            property_mix.get_value() as usize - 1,
+            property_channel.get_value() as usize - 1,
+            property_dampening_factor_attack.get_value(),
+            property_dampening_factor_release.get_value(),
+            // TODO: Make customizable, but provide a sane default value
+            WindowFunction::Hanning,
+        );
+
+        Ok(Self {
+            effect_param: EffectParam::new(param.disable()),
+            audio_fft: GLOBAL_STATE.request_audio_fft(&audio_fft_descriptor),
+            property_mix,
+            property_channel,
+            property_dampening_factor_attack,
+            property_dampening_factor_release,
+        })
+    }
+
+    pub fn add_properties(&self, properties: &mut Properties) {
+        self.property_mix.add_properties(properties);
+        self.property_channel.add_properties(properties);
+        self.property_dampening_factor_attack.add_properties(properties);
+        self.property_dampening_factor_release.add_properties(properties);
+    }
+
+    fn prepare_values<'a>(&mut self) {
+        let fft_result = if let Some(result) = self.audio_fft.retrieve_result() {
+            result
+        } else {
+            return;
+        };
+        let frequency_spectrum = &fft_result.frequency_spectrum;
+        let texture_data = unsafe {
+            std::slice::from_raw_parts::<u8>(
+                frequency_spectrum.as_ptr() as *const _,
+                frequency_spectrum.len() * std::mem::size_of::<f32>(),
+            )
+        }.iter().copied().collect::<Vec<_>>();
+        let texture_fft = TextureDescriptor {
+            dimensions: [frequency_spectrum.len(), 1],
+            color_format: ColorFormatKind::R32F,
+            levels: smallvec![texture_data],
+            flags: 0,
+        };
+
+        self.effect_param.prepare_value(texture_fft);
+    }
+
+    fn stage_value<'a>(&mut self, graphics_context: &'a GraphicsContext) {
+        self.effect_param.stage_value(graphics_context);
+    }
+
+    fn assign_value<'a>(&mut self, graphics_context: &'a FilterContext) {
+        self.effect_param.assign_value(graphics_context);
+    }
+
+    fn enable_and_drop(self, graphics_context: &GraphicsContext) {
+        self.effect_param.enable_and_drop(graphics_context);
+    }
+}
+
 #[derive(Default)]
 pub struct EffectParamsCustom {
     pub params_bool: Vec<EffectParamCustomBool>,
     pub params_float: Vec<EffectParamCustomFloat>,
     pub params_int: Vec<EffectParamCustomInt>,
     pub params_vec4: Vec<EffectParamCustomVec4>,
+    pub params_fft: Vec<EffectParamCustomFFT>,
     // TODO: Textures
 }
 
 impl EffectParamsCustom {
+    pub fn prepare_values(&mut self) {
+        self.params_fft.iter_mut().for_each(|param| param.prepare_values());
+    }
+
     pub fn stage_values(&mut self, graphics_context: &GraphicsContext) {
         self.params_bool.iter_mut().for_each(|param| param.stage_value(graphics_context));
         self.params_float.iter_mut().for_each(|param| param.stage_value(graphics_context));
         self.params_int.iter_mut().for_each(|param| param.stage_value(graphics_context));
         self.params_vec4.iter_mut().for_each(|param| param.stage_value(graphics_context));
+        self.params_fft.iter_mut().for_each(|param| param.stage_value(graphics_context));
     }
 
     pub fn assign_values(&mut self, graphics_context: &FilterContext) {
@@ -383,6 +627,7 @@ impl EffectParamsCustom {
         self.params_float.iter_mut().for_each(|param| param.assign_value(graphics_context));
         self.params_int.iter_mut().for_each(|param| param.assign_value(graphics_context));
         self.params_vec4.iter_mut().for_each(|param| param.assign_value(graphics_context));
+        self.params_fft.iter_mut().for_each(|param| param.assign_value(graphics_context));
     }
 
     pub fn enable_and_drop(self, graphics_context: &GraphicsContext) {
@@ -390,6 +635,7 @@ impl EffectParamsCustom {
         self.params_float.into_iter().for_each(|param| param.enable_and_drop(graphics_context));
         self.params_int.into_iter().for_each(|param| param.enable_and_drop(graphics_context));
         self.params_vec4.into_iter().for_each(|param| param.enable_and_drop(graphics_context));
+        self.params_fft.into_iter().for_each(|param| param.enable_and_drop(graphics_context));
     }
 
     pub fn add_properties(&self, properties: &mut Properties) {
@@ -397,13 +643,39 @@ impl EffectParamsCustom {
         self.params_float.iter().for_each(|param| properties.add_property(&param.property_descriptor));
         self.params_int.iter().for_each(|param| properties.add_property(&param.property_descriptor));
         self.params_vec4.iter().for_each(|param| properties.add_property(&param.property_descriptor));
+        self.params_fft.iter().for_each(|param| param.add_properties(properties));
     }
 
-    pub fn add_param<'a>(&mut self, param: GraphicsContextDependentEnabled<'a, GraphicsEffectParam>, settings: &mut SettingsContext) -> Result<(), Cow<'static, str>> {
+    pub fn add_param<'a>(
+        &mut self,
+        param: GraphicsContextDependentEnabled<'a, GraphicsEffectParam>,
+        settings: &mut SettingsContext,
+        preprocess_result: &PreprocessResult,
+    ) -> Result<(), Cow<'static, str>> {
         use ShaderParamTypeKind::*;
 
         let param_name = param.name().to_string();
         let result: Result<(), Cow<'static, str>> = try {
+            {
+                let pattern_builtin_texture_fft = Regex::new(r"^builtin_texture_fft_(?P<field>\w+)$").unwrap();
+
+                if let Some(captures) = pattern_builtin_texture_fft.captures(&param_name) {
+                    let field_name = captures.name("field").unwrap().as_str();
+
+                    if param.param_type() != Texture {
+                        throw!(format!("Builtin field `{}` must be of type `{}`", field_name, "texture2d"));
+                    }
+
+                    self.params_fft.push(EffectParamCustomFFT::new(
+                        param.downcast().unwrap(),
+                        field_name,
+                        settings,
+                        preprocess_result,
+                    )?);
+                    return Ok(());
+                }
+            }
+
             match param.param_type() {
                 Unknown => throw!("Cannot add an effect param of unknown type. Make sure to use HLSL type names for uniform variables."),
                 Bool  => self.params_bool.push(EffectParamCustomBool::new(param.downcast().unwrap(), settings)),
@@ -452,6 +724,10 @@ impl EffectParams {
         self.texture_fft.enable_and_drop(graphics_context);
         self.custom.enable_and_drop(graphics_context);
     }
+
+    pub fn add_properties(&self, properties: &mut Properties) {
+        self.custom.add_properties(properties);
+    }
 }
 
 pub struct PreparedEffect {
@@ -463,5 +739,9 @@ impl PreparedEffect {
     pub fn enable_and_drop(self, graphics_context: &GraphicsContext) {
         self.effect.enable(graphics_context);
         self.params.enable_and_drop(graphics_context);
+    }
+
+    pub fn add_properties(&self, properties: &mut Properties) {
+        self.params.add_properties(properties);
     }
 }

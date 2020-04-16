@@ -27,6 +27,7 @@ use regex::Regex;
 use fourier::*;
 use num_complex::Complex;
 use effect::*;
+use preprocessor::*;
 
 macro_rules! throw {
     ($e:expr) => {{
@@ -36,6 +37,7 @@ macro_rules! throw {
 }
 
 mod effect;
+mod preprocessor;
 
 lazy_static! {
     static ref GLOBAL_STATE: GlobalState = Default::default();
@@ -186,7 +188,11 @@ impl GlobalStateAudioFFT {
 
     fn process_audio_data<'a>(self: &Arc<Self>, audio_data: AudioData<'a, ()>) {
         let mut mutable_write = self.mutable.write().unwrap();
-        let current_samples = audio_data.samples_normalized(self.descriptor.channel).unwrap();
+        let current_samples = if let Some(samples) = audio_data.samples_normalized(self.descriptor.channel) {
+            samples
+        } else {
+            return;
+        };
 
         mutable_write.sample_buffer.extend(current_samples);
 
@@ -409,10 +415,6 @@ struct Data {
     effect: Option<PreparedEffect>,
     creation: Instant,
 
-    audio_counter: Arc<AtomicUsize>,
-    audio_fft: Arc<GlobalStateAudioFFT>,
-    texture_fft: Arc<Mutex<Option<TextureDescriptor>>>,
-
     property_shader: PropertyDescriptor<PropertyDescriptorSpecializationPath>,
     property_shader_reload: PropertyDescriptor<PropertyDescriptorSpecializationButton>,
 
@@ -422,48 +424,11 @@ struct Data {
 impl Data {
     pub fn new(source: SourceContext) -> Self {
         let settings_update_requested = Arc::new(AtomicBool::new(true));
-        let audio_fft = GLOBAL_STATE.request_audio_fft(&GlobalStateAudioFFTDescriptor::new(
-            0, // mix
-            0, // channel
-            0.0, // dampening attack
-            // 0.1, // dampening release
-            0.001, // dampening release
-            WindowFunction::Hanning,
-        ));
-        let texture_fft: Arc<Mutex<Option<TextureDescriptor>>> = Default::default();
-        let audio_counter = Arc::new(AtomicUsize::new(0));
-
-//         audio_fft.register_callback({
-//             let texture_fft = texture_fft.clone();
-//             let audio_counter = audio_counter.clone();
-
-//             Box::new(move |result| {
-//                 audio_counter.fetch_add(1, Ordering::SeqCst);
-//                 let mut texture_fft = texture_fft.lock().unwrap();
-//                 let texture_data = unsafe {
-//                     std::slice::from_raw_parts::<u8>(
-//                         result.as_ptr() as *const _,
-//                         result.len() * std::mem::size_of::<f32>(),
-//                     )
-//                 }.iter().copied().collect::<Vec<_>>();
-//                 let texture = TextureDescriptor {
-//                     dimensions: [result.len(), 1],
-//                     color_format: ColorFormatKind::R32F,
-//                     levels: smallvec![texture_data],
-//                     flags: 0,
-//                 };
-
-//                 *texture_fft = Some(texture);
-//             })
-//         });
 
         Self {
             source,
             effect: None,
             creation: Instant::now(),
-            audio_counter,
-            audio_fft,
-            texture_fft,
             property_shader: PropertyDescriptor {
                 name: CString::new("shader").unwrap(),
                 description: CString::new("The shader to use.").unwrap(),
@@ -529,7 +494,7 @@ impl GetPropertiesSource<Data> for ScrollFocusFilter {
         properties.add_property(&data.property_shader_reload);
 
         if let Some(effect) = data.effect.as_ref() {
-            effect.params.custom.add_properties(&mut properties);
+            effect.add_properties(&mut properties);
         }
 
         properties
@@ -554,23 +519,7 @@ impl VideoTickSource<Data> for ScrollFocusFilter {
                 data.source.get_base_height() as i32,
             ]);
 
-            if let Some(fft_result) = data.audio_fft.retrieve_result() {
-                let frequency_spectrum = &fft_result.frequency_spectrum;
-                let texture_data = unsafe {
-                    std::slice::from_raw_parts::<u8>(
-                        frequency_spectrum.as_ptr() as *const _,
-                        frequency_spectrum.len() * std::mem::size_of::<f32>(),
-                    )
-                }.iter().copied().collect::<Vec<_>>();
-                let texture_fft = TextureDescriptor {
-                    dimensions: [frequency_spectrum.len(), 1],
-                    color_format: ColorFormatKind::R32F,
-                    levels: smallvec![texture_data],
-                    flags: 0,
-                };
-
-                params.texture_fft.prepare_value(texture_fft);
-            }
+            params.custom.prepare_values();
 
             {
                 let graphics_context = GraphicsContext::enter().unwrap();
@@ -654,17 +603,25 @@ impl UpdateSource<Data> for ScrollFocusFilter {
                     format!("Shader not found at the specified path: {:?}", &shader_path)
                 })?;
 
-            let mut shader = String::new();
-            shader_file.read_to_string(&mut shader).expect("Could not read the shader at the given path.");
-            let pattern = Regex::new(r"(?P<shader>__SHADER__)").unwrap();
-            let effect_source = pattern.replace_all(EFFECT_SOURCE_TEMPLATE, shader.as_str());
+            let (preprocess_result, effect_source) = {
+                let mut shader = String::new();
+
+                shader_file.read_to_string(&mut shader).expect("Could not read the shader at the given path.");
+
+                let pattern = Regex::new(r"(?P<shader>__SHADER__)").unwrap();
+                let effect_source = pattern.replace_all(EFFECT_SOURCE_TEMPLATE, shader.as_str());
+
+                let (preprocess_result, effect_source) = preprocess(&effect_source);
+
+                (preprocess_result, effect_source.into_owned())
+            };
 
             let shader_path_c = CString::new(
                 shader_path.to_str().ok_or_else(|| {
                     "Specified shader path is not a valid UTF-8 string."
                 })?
             ).map_err(|_| "Shader path cannot be converted to a C string.")?;
-            let effect_source_c = CString::new(effect_source.as_ref())
+            let effect_source_c = CString::new(effect_source)
                 .map_err(|_| "Shader contents cannot be converted to a C string.")?;
 
             let graphics_context = GraphicsContext::enter()
@@ -705,7 +662,7 @@ impl UpdateSource<Data> for ScrollFocusFilter {
             });
 
             for custom_param in custom_params_iter {
-                params.custom.add_param(custom_param, settings)?;
+                params.custom.add_param(custom_param, settings, &preprocess_result)?;
             }
 
             data.effect.replace(PreparedEffect {

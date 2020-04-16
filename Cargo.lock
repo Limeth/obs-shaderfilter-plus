@@ -407,6 +407,7 @@ dependencies = [
  "fourier",
  "lazy_static",
  "num-complex",
+ "obs-sys",
  "obs-wrapper",
  "ordered-float",
  "paste",

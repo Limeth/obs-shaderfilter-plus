@@ -427,8 +427,8 @@ where T: ValuePropertyDescriptorSpecialization,
             _ => {
                 let property_name_default = format!("{}_default", property_name);
                 let default_value = if allow_definitions_in_source {
-                    dbg!(preprocess_result.parse::<<T as ValuePropertyDescriptorSpecialization>::ValueType>(field_name, &property_name_default)
-                    .transpose()?)
+                    preprocess_result.parse::<<T as ValuePropertyDescriptorSpecialization>::ValueType>(field_name, &property_name_default)
+                        .transpose()?
                 } else {
                     None
                 }.unwrap_or(default_value);
@@ -699,7 +699,6 @@ impl EffectParamsCustom {
 pub struct EffectParams {
     pub elapsed_time: EffectParamFloat,
     pub uv_size: EffectParamIVec2,
-    pub texture_fft: EffectParamTexture,
     pub custom: EffectParamsCustom,
 }
 
@@ -707,21 +706,18 @@ impl EffectParams {
     pub fn stage_values(&mut self, graphics_context: &GraphicsContext) {
         self.elapsed_time.stage_value(graphics_context);
         self.uv_size.stage_value(graphics_context);
-        self.texture_fft.stage_value(graphics_context);
         self.custom.stage_values(graphics_context);
     }
 
     pub fn assign_values(&mut self, graphics_context: &FilterContext) {
         self.elapsed_time.assign_value(graphics_context);
         self.uv_size.assign_value(graphics_context);
-        self.texture_fft.assign_value(graphics_context);
         self.custom.assign_values(graphics_context);
     }
 
     pub fn enable_and_drop(self, graphics_context: &GraphicsContext) {
         self.elapsed_time.enable_and_drop(graphics_context);
         self.uv_size.enable_and_drop(graphics_context);
-        self.texture_fft.enable_and_drop(graphics_context);
         self.custom.enable_and_drop(graphics_context);
     }
 

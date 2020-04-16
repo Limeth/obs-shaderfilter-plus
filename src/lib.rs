@@ -653,7 +653,6 @@ impl UpdateSource<Data> for ScrollFocusFilter {
             let mut params = EffectParams {
                 elapsed_time: builtin_effect!("builtin_elapsed_time"),
                 uv_size: builtin_effect!("builtin_uv_size"),
-                texture_fft: builtin_effect!("builtin_texture_fft"),
                 custom: Default::default(),
             };
 

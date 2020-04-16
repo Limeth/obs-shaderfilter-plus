@@ -47,7 +47,7 @@ impl<'a> Replacer for &'a mut PreprocessResult {
             let property = caps.name("property").ok_or_else(|| "Missing property name.")?.as_str().to_string();
             let value = caps.name("value").ok_or_else(|| "Missing value.")?.as_str().to_string();
 
-            self.map.insert(dbg!((field, property)), dbg!(value));
+            self.map.insert((field, property), value);
         };
 
         if let Err(result) = result {

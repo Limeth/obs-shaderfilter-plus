@@ -3,7 +3,6 @@ uniform texture2d image;
 
 uniform float     builtin_elapsed_time;
 uniform int2      builtin_uv_size;
-uniform texture2d builtin_texture_fft;
 
 sampler_state builtin_texture_sampler {
     Filter = Linear;

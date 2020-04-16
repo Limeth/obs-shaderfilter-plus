@@ -369,87 +369,497 @@ impl EffectParamCustom for EffectParamCustomVec4 {
     }
 }
 
-pub trait BuiltinType {
-    fn name() -> &'static str;
-
-    fn format_builtin_field(field_name: &str, property_name: Option<&str>) -> String {
-        if let Some(property_name) = property_name {
-            format!("builtin_{}_{}_{}", Self::name(), field_name, property_name)
-        } else {
-            format!("builtin_{}_{}", Self::name(), field_name)
-        }
-    }
-
-    fn new_property<T>(field_name: &str, property_name: &str, specialization: T) -> PropertyDescriptor<T>
-        where T: PropertyDescriptorSpecialization,
-    {
-        PropertyDescriptor {
-            name: CString::new(Self::format_builtin_field(field_name, Some(property_name))).unwrap(),
-            description: CString::new(format!("{} {}", field_name, property_name)).unwrap(),
-            specialization,
-        }
-    }
+/// An object representing a binding of setting-properties to graphics uniforms.
+pub trait BindableProperty {
+    fn add_properties(&self, properties: &mut Properties);
+    fn prepare_values(&mut self);
+    fn stage_value<'a>(&mut self, graphics_context: &'a GraphicsContext);
+    fn assign_value<'a>(&mut self, graphics_context: &'a FilterContext);
+    fn enable_and_drop(self, graphics_context: &GraphicsContext);
 }
 
-/// A simple property. Its value is assigned from either the shader source code (hardcoded)
-/// or from the effect settings properties.
-pub struct PropertyKind<T>
-where T: ValuePropertyDescriptorSpecialization,
-      <T as ValuePropertyDescriptorSpecialization>::ValueType: FromStr + Default + Clone,
-{
-    setting: Option<PropertyDescriptor<T>>,
-    value: <T as ValuePropertyDescriptorSpecialization>::ValueType,
-}
+pub trait LoadedValueType: Sized {
+    type Output;
+    type Args;
 
-impl<T> PropertyKind<T>
-where T: ValuePropertyDescriptorSpecialization,
-      <T as ValuePropertyDescriptorSpecialization>::ValueType: FromStr + Default + Clone,
-{
-    pub fn from<B: BuiltinType>(
-        allow_definitions_in_source: bool,
-        default_value: <T as ValuePropertyDescriptorSpecialization>::ValueType,
-        field_name: &str,
-        property_name: &str,
-        specialization: T,
+    fn from_identifier(
+        args: Self::Args,
+        identifier: &str,
+        preprocess_result: &PreprocessResult,
+        settings: &mut SettingsContext,
+    ) -> Result<Self, Cow<'static, str>>;
+
+    fn from(
+        args: Self::Args,
+        parent_identifier: &str,
+        property_name: Option<&str>,
         preprocess_result: &PreprocessResult,
         settings: &mut SettingsContext,
     ) -> Result<Self, Cow<'static, str>> {
-        let setting_name = B::format_builtin_field(field_name, Some(property_name));
-        let hardcoded_value = preprocess_result.parse::<<T as ValuePropertyDescriptorSpecialization>::ValueType>(field_name, property_name);
+        if let Some(property_name) = property_name {
+            Self::from_identifier(
+                args,
+                &format!("{}__{}", parent_identifier, property_name),
+                preprocess_result,
+                settings,
+            )
+        } else {
+            Self::from_identifier(
+                args,
+                parent_identifier,
+                preprocess_result,
+                settings,
+            )
+        }
+    }
+
+    fn add_properties(&self, properties: &mut Properties);
+
+    fn get_value(&self) -> Self::Output;
+}
+
+pub struct LoadedValueTypeSourceArgs<T> where T: FromStr + Clone {
+    default_value: Option<T>,
+}
+
+/// A loaded value of which the value can only be specified in the shader source code.
+/// Returns `Some(T)`, if a default value is specified.
+/// Otherwise, may return `None`.
+pub struct LoadedValueTypeSource<T> where T: FromStr + Clone {
+    value: Option<T>,
+}
+
+impl<T> LoadedValueType for LoadedValueTypeSource<T> where T: FromStr + Clone {
+    type Output = Option<T>;
+    type Args = LoadedValueTypeSourceArgs<T>;
+
+    fn from_identifier(
+        args: Self::Args,
+        identifier: &str,
+        preprocess_result: &PreprocessResult,
+        _settings: &mut SettingsContext,
+    ) -> Result<Self, Cow<'static, str>> {
+        let value = preprocess_result.parse::<T>(identifier)
+            .transpose()?
+            .or(args.default_value);
+
+        Ok(Self { value })
+    }
+
+    fn add_properties(&self, _properties: &mut Properties) {
+        // Simple property types do not produce any UI
+    }
+
+    fn get_value(&self) -> Self::Output {
+        self.value.clone()
+    }
+}
+
+pub struct LoadedValueTypePropertyDescriptorArgs<T: PropertyDescriptorSpecialization> {
+    default_value: T,
+}
+
+pub trait LoadedValueTypePropertyDescriptor: Sized {
+    type Specialization: PropertyDescriptorSpecialization;
+
+    fn new_args(specialization: Self::Specialization) -> LoadedValueTypePropertyDescriptorArgs<Self::Specialization> {
+        LoadedValueTypePropertyDescriptorArgs {
+            default_value: specialization,
+        }
+    }
+
+    fn from_identifier(
+        args: LoadedValueTypePropertyDescriptorArgs<Self::Specialization>,
+        identifier: &str,
+        preprocess_result: &PreprocessResult,
+        settings: &mut SettingsContext,
+    ) -> Result<Self, Cow<'static, str>>;
+
+    fn add_properties(&self, properties: &mut Properties);
+
+    fn get_value(&self) -> PropertyDescriptor<Self::Specialization>;
+}
+
+impl<T, L> LoadedValueType for L
+where T: PropertyDescriptorSpecialization + Sized,
+      L: LoadedValueTypePropertyDescriptor<Specialization=T>,
+{
+    type Output = PropertyDescriptor<T>;
+    type Args = LoadedValueTypePropertyDescriptorArgs<T>;
+
+    fn from_identifier(
+        args: Self::Args,
+        identifier: &str,
+        preprocess_result: &PreprocessResult,
+        settings: &mut SettingsContext,
+    ) -> Result<Self, Cow<'static, str>> {
+        <Self as LoadedValueTypePropertyDescriptor>::from_identifier(args, identifier, preprocess_result, settings)
+    }
+
+    fn add_properties(&self, properties: &mut Properties) {
+        <Self as LoadedValueTypePropertyDescriptor>::add_properties(self, properties)
+    }
+
+    fn get_value(&self) -> Self::Output {
+        <Self as LoadedValueTypePropertyDescriptor>::get_value(self)
+    }
+}
+
+/// A loaded value type, which loads a property descriptor from the shader source code.
+/// Useful for creating loaded values which retrieve their data from the effect UI.
+pub struct LoadedValueTypePropertyDescriptorF64 {
+    descriptor: PropertyDescriptor<PropertyDescriptorSpecializationF64>,
+    description: LoadedValueTypeSource<String>,
+    min: LoadedValueTypeSource<f64>,
+    max: LoadedValueTypeSource<f64>,
+    step: LoadedValueTypeSource<f64>,
+    slider: LoadedValueTypeSource<bool>,
+}
+
+impl LoadedValueTypePropertyDescriptor for LoadedValueTypePropertyDescriptorF64 {
+    type Specialization = PropertyDescriptorSpecializationF64;
+
+    fn from_identifier(
+        args: LoadedValueTypePropertyDescriptorArgs<Self::Specialization>,
+        identifier: &str,
+        preprocess_result: &PreprocessResult,
+        settings: &mut SettingsContext,
+    ) -> Result<Self, Cow<'static, str>> {
+        let description = <LoadedValueTypeSource::<String> as LoadedValueType>::from(
+            LoadedValueTypeSourceArgs {
+                default_value: Some(identifier.to_string()),
+            },
+            identifier,
+            Some("description"),
+            preprocess_result,
+            settings,
+        )?;
+        let min = <LoadedValueTypeSource::<f64> as LoadedValueType>::from(
+            LoadedValueTypeSourceArgs {
+                default_value: Some(args.default_value.min),
+            },
+            identifier,
+            Some("min"),
+            preprocess_result,
+            settings,
+        )?;
+        let max = <LoadedValueTypeSource::<f64> as LoadedValueType>::from(
+            LoadedValueTypeSourceArgs {
+                default_value: Some(args.default_value.max),
+            },
+            identifier,
+            Some("max"),
+            preprocess_result,
+            settings,
+        )?;
+        let step = <LoadedValueTypeSource::<f64> as LoadedValueType>::from(
+            LoadedValueTypeSourceArgs {
+                default_value: Some(args.default_value.step),
+            },
+            identifier,
+            Some("step"),
+            preprocess_result,
+            settings,
+        )?;
+        let slider = <LoadedValueTypeSource::<bool> as LoadedValueType>::from(
+            LoadedValueTypeSourceArgs {
+                default_value: Some(args.default_value.slider),
+            },
+            identifier,
+            Some("slider"),
+            preprocess_result,
+            settings,
+        )?;
+        let descriptor = PropertyDescriptor {
+            // we can safely unwrap loaded values, because default values were specified
+            name: CString::new(identifier).unwrap(),
+            description: CString::new(description.get_value().unwrap()).unwrap(),
+            specialization: PropertyDescriptorSpecializationF64 {
+                min: min.get_value().unwrap(),
+                max: max.get_value().unwrap(),
+                step: step.get_value().unwrap(),
+                slider: slider.get_value().unwrap(),
+            },
+        };
+
+        Ok(Self {
+            descriptor,
+            description,
+            min,
+            max,
+            step,
+            slider,
+        })
+    }
+
+    fn add_properties(&self, properties: &mut Properties) {
+        self.min.add_properties(properties);
+        self.max.add_properties(properties);
+        self.step.add_properties(properties);
+        self.slider.add_properties(properties);
+        self.description.add_properties(properties);
+        properties.add_property(&self.descriptor);
+    }
+
+    fn get_value(&self) -> PropertyDescriptor<Self::Specialization> {
+        self.descriptor.clone()
+    }
+}
+
+pub struct LoadedValueTypePropertyDescriptorI32 {
+    descriptor: PropertyDescriptor<PropertyDescriptorSpecializationI32>,
+    description: LoadedValueTypeSource<String>,
+    min: LoadedValueTypeSource<i32>,
+    max: LoadedValueTypeSource<i32>,
+    step: LoadedValueTypeSource<i32>,
+    slider: LoadedValueTypeSource<bool>,
+}
+
+impl LoadedValueTypePropertyDescriptor for LoadedValueTypePropertyDescriptorI32 {
+    type Specialization = PropertyDescriptorSpecializationI32;
+
+    fn from_identifier(
+        args: LoadedValueTypePropertyDescriptorArgs<Self::Specialization>,
+        identifier: &str,
+        preprocess_result: &PreprocessResult,
+        settings: &mut SettingsContext,
+    ) -> Result<Self, Cow<'static, str>> {
+        let description = <LoadedValueTypeSource::<String> as LoadedValueType>::from(
+            LoadedValueTypeSourceArgs {
+                default_value: Some(identifier.to_string()),
+            },
+            identifier,
+            Some("description"),
+            preprocess_result,
+            settings,
+        )?;
+        let min = <LoadedValueTypeSource::<i32> as LoadedValueType>::from(
+            LoadedValueTypeSourceArgs {
+                default_value: Some(args.default_value.min),
+            },
+            identifier,
+            Some("min"),
+            preprocess_result,
+            settings,
+        )?;
+        let max = <LoadedValueTypeSource::<i32> as LoadedValueType>::from(
+            LoadedValueTypeSourceArgs {
+                default_value: Some(args.default_value.max),
+            },
+            identifier,
+            Some("max"),
+            preprocess_result,
+            settings,
+        )?;
+        let step = <LoadedValueTypeSource::<i32> as LoadedValueType>::from(
+            LoadedValueTypeSourceArgs {
+                default_value: Some(args.default_value.step),
+            },
+            identifier,
+            Some("step"),
+            preprocess_result,
+            settings,
+        )?;
+        let slider = <LoadedValueTypeSource::<bool> as LoadedValueType>::from(
+            LoadedValueTypeSourceArgs {
+                default_value: Some(args.default_value.slider),
+            },
+            identifier,
+            Some("slider"),
+            preprocess_result,
+            settings,
+        )?;
+        let descriptor = PropertyDescriptor {
+            // we can safely unwrap loaded values, because default values were specified
+            name: CString::new(identifier).unwrap(),
+            description: CString::new(description.get_value().unwrap()).unwrap(),
+            specialization: PropertyDescriptorSpecializationI32 {
+                min: min.get_value().unwrap(),
+                max: max.get_value().unwrap(),
+                step: step.get_value().unwrap(),
+                slider: slider.get_value().unwrap(),
+            },
+        };
+
+        Ok(Self {
+            descriptor,
+            description,
+            min,
+            max,
+            step,
+            slider,
+        })
+    }
+
+    fn add_properties(&self, properties: &mut Properties) {
+        self.min.add_properties(properties);
+        self.max.add_properties(properties);
+        self.step.add_properties(properties);
+        self.slider.add_properties(properties);
+        self.description.add_properties(properties);
+        properties.add_property(&self.descriptor);
+    }
+
+    fn get_value(&self) -> PropertyDescriptor<Self::Specialization> {
+        self.descriptor.clone()
+    }
+}
+
+pub struct LoadedValueTypePropertyDescriptorBool {
+    descriptor: PropertyDescriptor<PropertyDescriptorSpecializationBool>,
+    description: LoadedValueTypeSource<String>,
+}
+
+impl LoadedValueTypePropertyDescriptor for LoadedValueTypePropertyDescriptorBool {
+    type Specialization = PropertyDescriptorSpecializationBool;
+
+    fn from_identifier(
+        _args: LoadedValueTypePropertyDescriptorArgs<Self::Specialization>,
+        identifier: &str,
+        preprocess_result: &PreprocessResult,
+        settings: &mut SettingsContext,
+    ) -> Result<Self, Cow<'static, str>> {
+        let description = <LoadedValueTypeSource::<String> as LoadedValueType>::from(
+            LoadedValueTypeSourceArgs {
+                default_value: Some(identifier.to_string()),
+            },
+            identifier,
+            Some("description"),
+            preprocess_result,
+            settings,
+        )?;
+        let descriptor = PropertyDescriptor {
+            name: CString::new(identifier).unwrap(),
+            description: CString::new(description.get_value().unwrap()).unwrap(),
+            specialization: PropertyDescriptorSpecializationBool {},
+        };
+
+        Ok(Self {
+            descriptor,
+            description,
+        })
+    }
+
+    fn add_properties(&self, properties: &mut Properties) {
+        self.description.add_properties(properties);
+        properties.add_property(&self.descriptor);
+    }
+
+    fn get_value(&self) -> PropertyDescriptor<Self::Specialization> {
+        self.descriptor.clone()
+    }
+}
+
+pub struct LoadedValueTypePropertyArgs<T>
+where T: LoadedValueTypePropertyDescriptor,
+      <T as LoadedValueTypePropertyDescriptor>::Specialization: ValuePropertyDescriptorSpecialization,
+      <<T as LoadedValueTypePropertyDescriptor>::Specialization as ValuePropertyDescriptorSpecialization>::ValueType: FromStr + Clone,
+{
+    allow_definitions_in_source: bool,
+    default_descriptor_specialization: <T as LoadedValueTypePropertyDescriptor>::Specialization,
+    default_value: <<T as LoadedValueTypePropertyDescriptor>::Specialization as ValuePropertyDescriptorSpecialization>::ValueType,
+}
+
+/// Represents a hierarchically-loaded value.
+/// This value can be either provided by the shader source code,
+/// or from the effect settings properties.
+pub struct LoadedValueTypeProperty<T>
+where T: LoadedValueTypePropertyDescriptor,
+      <T as LoadedValueTypePropertyDescriptor>::Specialization: ValuePropertyDescriptorSpecialization,
+      <<T as LoadedValueTypePropertyDescriptor>::Specialization as ValuePropertyDescriptorSpecialization>::ValueType: FromStr + Clone,
+{
+    loaded_value_descriptor: Option<T>,
+    loaded_value_default: Option<LoadedValueTypeSource::<<<T as LoadedValueTypePropertyDescriptor>::Specialization as ValuePropertyDescriptorSpecialization>::ValueType>>,
+    value: <<T as LoadedValueTypePropertyDescriptor>::Specialization as ValuePropertyDescriptorSpecialization>::ValueType,
+}
+
+impl<T> LoadedValueType for LoadedValueTypeProperty<T>
+where T: LoadedValueTypePropertyDescriptor,
+      <T as LoadedValueTypePropertyDescriptor>::Specialization: ValuePropertyDescriptorSpecialization,
+      <<T as LoadedValueTypePropertyDescriptor>::Specialization as ValuePropertyDescriptorSpecialization>::ValueType: FromStr + Clone,
+{
+    type Output = <<T as LoadedValueTypePropertyDescriptor>::Specialization as ValuePropertyDescriptorSpecialization>::ValueType;
+    type Args = LoadedValueTypePropertyArgs<T>;
+
+    fn from_identifier(
+        args: Self::Args,
+        identifier: &str,
+        preprocess_result: &PreprocessResult,
+        settings: &mut SettingsContext,
+    ) -> Result<Self, Cow<'static, str>> {
+        let hardcoded_value = preprocess_result.parse::<<<T as LoadedValueTypePropertyDescriptor>::Specialization as ValuePropertyDescriptorSpecialization>::ValueType>(identifier);
 
         Ok(match hardcoded_value {
-            Some(result) if allow_definitions_in_source => {
+            Some(result) => {
+                if !args.allow_definitions_in_source {
+                    throw!(format!("The value of the property `{}` may not be hardcoded in the shader source code.", identifier));
+                }
+
                 Self {
-                    setting: None,
+                    loaded_value_descriptor: None,
+                    loaded_value_default: None,
                     value: result?,
                 }
             },
-            _ => {
-                let property_name_default = format!("{}_default", property_name);
-                let default_value = if allow_definitions_in_source {
-                    preprocess_result.parse::<<T as ValuePropertyDescriptorSpecialization>::ValueType>(field_name, &property_name_default)
-                        .transpose()?
+            None => {
+                let (default_value, loaded_value_default) = if args.allow_definitions_in_source {
+                    let loaded_value_default = <LoadedValueTypeSource::<<<T as LoadedValueTypePropertyDescriptor>::Specialization as ValuePropertyDescriptorSpecialization>::ValueType> as LoadedValueType>::from(
+                        LoadedValueTypeSourceArgs {
+                            default_value: Some(args.default_value),
+                        },
+                        identifier,
+                        Some("default"),
+                        preprocess_result,
+                        settings,
+                    )?;
+                    (loaded_value_default.get_value().unwrap(), Some(loaded_value_default))
                 } else {
-                    None
-                }.unwrap_or(default_value);
-                let setting = B::new_property(field_name, property_name, specialization);
-                let loaded_value = settings.get_property_value(&setting, &default_value);
+                    let loaded_value_default = <LoadedValueTypeSource::<<<T as LoadedValueTypePropertyDescriptor>::Specialization as ValuePropertyDescriptorSpecialization>::ValueType> as LoadedValueType>::from(
+                        LoadedValueTypeSourceArgs {
+                            default_value: None,
+                        },
+                        identifier,
+                        Some("default"),
+                        preprocess_result,
+                        settings,
+                    );
+
+                    if loaded_value_default.is_err()
+                        || loaded_value_default.unwrap().get_value().is_some() {
+                            throw!(format!("The default value of the property `{}` may not be hardcoded in the shader source code.", identifier))
+                    }
+
+                    (args.default_value, None)
+                };
+                let loaded_value_descriptor = <T as LoadedValueType>::from(
+                    <T as LoadedValueTypePropertyDescriptor>::new_args(args.default_descriptor_specialization),
+                    identifier,
+                    None,
+                    preprocess_result,
+                    settings,
+                )?;
+                let descriptor = loaded_value_descriptor.get_value();
+                let loaded_value = settings.get_property_value(&descriptor, &default_value);
 
                 Self {
-                    setting: Some(setting),
+                    loaded_value_descriptor: Some(loaded_value_descriptor),
+                    loaded_value_default,
                     value: loaded_value,
                 }
             }
         })
     }
 
-    pub fn add_properties(&self, properties: &mut Properties) {
-        if let &Some(ref setting) = &self.setting {
-            properties.add_property(setting);
+    fn add_properties(&self, properties: &mut Properties) {
+        if let &Some(ref default) = &self.loaded_value_default {
+            default.add_properties(properties);
+        }
+        if let &Some(ref descriptor) = &self.loaded_value_descriptor {
+            descriptor.add_properties(properties);
         }
     }
 
-    pub fn get_value(&self) -> <T as ValuePropertyDescriptorSpecialization>::ValueType {
+    fn get_value(&self) -> <<T as LoadedValueTypePropertyDescriptor>::Specialization as ValuePropertyDescriptorSpecialization>::ValueType {
         self.value.clone()
     }
 }
@@ -457,82 +867,80 @@ where T: ValuePropertyDescriptorSpecialization,
 pub struct EffectParamCustomFFT {
     pub effect_param: EffectParamTexture,
     pub audio_fft: Arc<GlobalStateAudioFFT>,
-    pub property_mix: PropertyKind<PropertyDescriptorSpecializationI32>,
-    pub property_channel: PropertyKind<PropertyDescriptorSpecializationI32>,
-    pub property_dampening_factor_attack: PropertyKind<PropertyDescriptorSpecializationF64>,
-    pub property_dampening_factor_release: PropertyKind<PropertyDescriptorSpecializationF64>,
-}
-
-impl BuiltinType for EffectParamCustomFFT {
-    fn name() -> &'static str {
-        "texture_fft"
-    }
+    pub property_mix: LoadedValueTypeProperty<LoadedValueTypePropertyDescriptorI32>,
+    pub property_channel: LoadedValueTypeProperty<LoadedValueTypePropertyDescriptorI32>,
+    pub property_dampening_factor_attack: LoadedValueTypeProperty<LoadedValueTypePropertyDescriptorF64>,
+    pub property_dampening_factor_release: LoadedValueTypeProperty<LoadedValueTypePropertyDescriptorF64>,
 }
 
 impl EffectParamCustomFFT {
     fn new<'a>(
         param: GraphicsContextDependentEnabled<'a, GraphicsEffectParamTyped<ShaderParamTypeTexture>>,
-        field_name: &str,
+        identifier: &str,
         settings: &mut SettingsContext,
         preprocess_result: &PreprocessResult,
     ) -> Result<Self, Cow<'static, str>> {
-        let property_mix = PropertyKind::from::<Self>(
-            false,
-            1,
-            field_name,
-            "mix",
-            // TODO: make customizable using macros
-            PropertyDescriptorSpecializationI32 {
-                min: 1,
-                max: MAX_AUDIO_MIXES as i32,
-                step: 1,
-                slider: false,
+        let property_mix = <LoadedValueTypeProperty<_> as LoadedValueType>::from(
+            LoadedValueTypePropertyArgs {
+                allow_definitions_in_source: false,
+                default_value: 1,
+                default_descriptor_specialization: PropertyDescriptorSpecializationI32 {
+                    min: 1,
+                    max: MAX_AUDIO_MIXES as i32,
+                    step: 1,
+                    slider: false,
+                },
             },
+            identifier,
+            Some("mix"),
             preprocess_result,
             settings,
         )?;
-        let property_channel = PropertyKind::from::<Self>(
-            false,
-            1,
-            field_name,
-            "channel",
-            // TODO: make customizable using macros
-            PropertyDescriptorSpecializationI32 {
-                min: 1,
-                max: 2, // FIXME: Currently causes crashes when out of bounds MAX_AUDIO_CHANNELS as i32,
-                step: 1,
-                slider: false,
+        let property_channel = <LoadedValueTypeProperty<_> as LoadedValueType>::from(
+            LoadedValueTypePropertyArgs {
+                allow_definitions_in_source: false,
+                default_value: 1,
+                default_descriptor_specialization: PropertyDescriptorSpecializationI32 {
+                    min: 1,
+                    max: 2, // FIXME: Causes crashes when `MAX_AUDIO_CHANNELS as i32` is used, supposedly fixed in next OBS release
+                    step: 1,
+                    slider: false,
+                },
             },
+            identifier,
+            Some("channel"),
             preprocess_result,
             settings,
         )?;
-        let property_dampening_factor_attack = PropertyKind::from::<Self>(
-            true,
-            0.0,
-            field_name,
-            "dampening_factor_attack",
-            // TODO: make customizable using macros
-            PropertyDescriptorSpecializationF64 {
-                min: 0.0,
-                max: 0.0,
-                step: 0.1,
-                slider: false,
+        let property_dampening_factor_attack = <LoadedValueTypeProperty<_> as LoadedValueType>::from(
+            LoadedValueTypePropertyArgs {
+                allow_definitions_in_source: true,
+                default_value: 0.0,
+                default_descriptor_specialization: PropertyDescriptorSpecializationF64 {
+                    min: 0.0,
+                    max: 100.0,
+                    step: 0.01,
+                    slider: true,
+                },
             },
+            identifier,
+            Some("dampening_factor_attack"),
             preprocess_result,
             settings,
         )?;
-        let property_dampening_factor_release = PropertyKind::from::<Self>(
-            true,
-            0.0,
-            field_name,
-            "dampening_factor_release",
-            // TODO: make customizable using macros
-            PropertyDescriptorSpecializationF64 {
-                min: 0.0,
-                max: 0.0,
-                step: 0.1,
-                slider: false,
+        let property_dampening_factor_release = <LoadedValueTypeProperty<_> as LoadedValueType>::from(
+            LoadedValueTypePropertyArgs {
+                allow_definitions_in_source: true,
+                default_value: 0.0,
+                default_descriptor_specialization: PropertyDescriptorSpecializationF64 {
+                    min: 0.0,
+                    max: 100.0,
+                    step: 0.01,
+                    slider: true,
+                },
             },
+            identifier,
+            Some("dampening_factor_release"),
             preprocess_result,
             settings,
         )?;
@@ -540,8 +948,8 @@ impl EffectParamCustomFFT {
         let audio_fft_descriptor = GlobalStateAudioFFTDescriptor::new(
             property_mix.get_value() as usize - 1,
             property_channel.get_value() as usize - 1,
-            property_dampening_factor_attack.get_value(),
-            property_dampening_factor_release.get_value(),
+            property_dampening_factor_attack.get_value() / 100.0,
+            property_dampening_factor_release.get_value() / 100.0,
             // TODO: Make customizable, but provide a sane default value
             WindowFunction::Hanning,
         );

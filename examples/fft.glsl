@@ -1,9 +1,14 @@
 // Configure builtin uniforms
-#pragma shaderfilter set main dampening_factor_attack 0.0
-#pragma shaderfilter set main dampening_factor_release 0.2
+// These macros are optional, but improve the user experience
+#pragma shaderfilter set main__dampening_factor_attack 0.0
+#pragma shaderfilter set main__dampening_factor_release 0.0
+#pragma shaderfilter set main__mix__description Main Mix/Track
+#pragma shaderfilter set main__channel__description Main Channel
 uniform texture2d builtin_texture_fft_main;
 
 // Define configurable variables
+// These macros are optional, but improve the user experience
+#pragma shaderfilter set fft_color__description FFT Color
 uniform float4 fft_color;
 
 float remap(float x, vec2 from, vec2 to) {

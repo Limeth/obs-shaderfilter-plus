@@ -175,7 +175,18 @@ impl<T: EffectParamType> EffectParam<T> {
         }
     }
 
+    pub fn stage_value_custom<'a>(&mut self, value: GraphicsContextDependentDisabled<<<T as EffectParamType>::ShaderParamType as ShaderParamType>::RustType>, graphics_context: &'a GraphicsContext) {
+        if let Some(previous) = self.staged_value.replace(value) {
+            previous.enable(graphics_context);
+        }
+    }
+
+    pub fn take_staged_value(&mut self) -> Option<GraphicsContextDependentDisabled<<<T as EffectParamType>::ShaderParamType as ShaderParamType>::RustType>> {
+        self.staged_value.take()
+    }
+
     /// Assigns the staged value to the effect current filter.
+    /// Keeps the staged value around.
     pub fn assign_value<'a>(&mut self, context: &'a FilterContext) {
         let staged_value = self.staged_value.as_ref()
             .expect("Tried to assign a value before staging it.")
@@ -186,6 +197,12 @@ impl<T: EffectParamType> EffectParam<T> {
             &mut self.param.as_enabled_mut(context.graphics()),
             context,
         );
+    }
+
+    pub fn assign_value_if_staged<'a>(&mut self, context: &'a FilterContext) {
+        if self.staged_value.is_some() {
+            self.assign_value(context);
+        }
     }
 
     fn enable_and_drop(self, graphics_context: &GraphicsContext) {
@@ -986,6 +1003,7 @@ where T: LoadedValueTypePropertyDescriptor,
 
 pub struct EffectParamCustomFFT {
     pub effect_param: EffectParamTexture,
+    pub effect_param_previous: Option<EffectParamTexture>,
     pub audio_fft: Arc<GlobalStateAudioFFT>,
     pub property_mix: LoadedValueTypeProperty<LoadedValueTypePropertyDescriptorI32>,
     pub property_channel: LoadedValueTypeProperty<LoadedValueTypePropertyDescriptorI32>,
@@ -996,6 +1014,7 @@ pub struct EffectParamCustomFFT {
 impl EffectParamCustomFFT {
     fn new<'a>(
         param: GraphicsContextDependentEnabled<'a, GraphicsEffectParamTyped<ShaderParamTypeTexture>>,
+        param_previous: Option<GraphicsContextDependentEnabled<'a, GraphicsEffectParamTyped<ShaderParamTypeTexture>>>,
         identifier: &str,
         settings: &mut SettingsContext,
         preprocess_result: &PreprocessResult,
@@ -1076,6 +1095,7 @@ impl EffectParamCustomFFT {
 
         Ok(Self {
             effect_param: EffectParam::new(param.disable()),
+            effect_param_previous: param_previous.map(|param_previous| EffectParam::new(param_previous.disable())),
             audio_fft: GLOBAL_STATE.request_audio_fft(&audio_fft_descriptor),
             property_mix,
             property_channel,
@@ -1115,14 +1135,26 @@ impl EffectParamCustomFFT {
     }
 
     fn stage_value<'a>(&mut self, graphics_context: &'a GraphicsContext) {
+        if let Some(effect_param_previous) = self.effect_param_previous.as_mut() {
+            if let Some(previous_texture_fft) = self.effect_param.take_staged_value() {
+                effect_param_previous.stage_value_custom(previous_texture_fft, graphics_context);
+            }
+        }
+
         self.effect_param.stage_value(graphics_context);
     }
 
     fn assign_value<'a>(&mut self, graphics_context: &'a FilterContext) {
-        self.effect_param.assign_value(graphics_context);
+        if let Some(effect_param_previous) = self.effect_param_previous.as_mut() {
+            effect_param_previous.assign_value_if_staged(graphics_context);
+        }
+        self.effect_param.assign_value_if_staged(graphics_context);
     }
 
     fn enable_and_drop(self, graphics_context: &GraphicsContext) {
+        if let Some(effect_param_previous) = self.effect_param_previous {
+            effect_param_previous.enable_and_drop(graphics_context);
+        }
         self.effect_param.enable_and_drop(graphics_context);
     }
 }
@@ -1181,50 +1213,86 @@ impl EffectParamsCustom {
     pub fn add_param<'a>(
         &mut self,
         param: GraphicsContextDependentEnabled<'a, GraphicsEffectParam>,
+        param_name: &str,
         settings: &mut SettingsContext,
         preprocess_result: &PreprocessResult,
     ) -> Result<(), Cow<'static, str>> {
         use ShaderParamTypeKind::*;
 
-        let param_name = param.name().to_string();
+        Ok(match param.param_type() {
+            Unknown => throw!("Cannot add an effect param of unknown type. Make sure to use HLSL type names for uniform variables."),
+            Bool  => self.params_bool.push(EffectParamCustomBool::new(param.downcast().unwrap(), &param_name, settings, preprocess_result)?),
+            Float => self.params_float.push(EffectParamCustomFloat::new(param.downcast().unwrap(), &param_name, settings, preprocess_result)?),
+            Int   => self.params_int.push(EffectParamCustomInt::new(param.downcast().unwrap(), &param_name, settings, preprocess_result)?),
+            Vec4  => self.params_vec4.push(EffectParamCustomColor::new(param.downcast().unwrap(), &param_name, settings, preprocess_result)?),
+            Vec2 | Vec3 | IVec2 | IVec3 | IVec4 | Mat4 => {
+                throw!("Multi-component types as effect params are not yet supported.");
+            },
+            String => throw!("Strings as effect params are not yet supported."),
+            Texture => throw!("Textures as effect params are not yet supported."),
+        })
+    }
+
+    pub fn add_params<'a>(
+        &mut self,
+        mut params: HashMap<String, GraphicsContextDependentEnabled<'a, GraphicsEffectParam>>,
+        settings: &mut SettingsContext,
+        preprocess_result: &PreprocessResult,
+    ) -> Result<(), Cow<'static, str>> {
+        use ShaderParamTypeKind::*;
+
         let result: Result<(), Cow<'static, str>> = try {
             {
                 let pattern_builtin_texture_fft = Regex::new(r"^builtin_texture_fft_(?P<field>\w+)$").unwrap();
+                let pattern_field_previous = Regex::new(r"^.*_previous$").unwrap();
+                let param_names = params.keys().cloned().collect::<Vec<_>>();
 
-                if let Some(captures) = pattern_builtin_texture_fft.captures(&param_name) {
+                for param_name in &param_names {
+                    let captures = if let Some(captures) = pattern_builtin_texture_fft.captures(&param_name) {
+                        captures
+                    } else {
+                        continue;
+                    };
                     let field_name = captures.name("field").unwrap().as_str();
+
+                    if pattern_field_previous.is_match(&field_name) {
+                        continue;
+                    }
+
+                    let param = params.remove(param_name).unwrap();
+                    let param_previous = params.remove(&format!("{}_previous", param_name));
 
                     if param.param_type() != Texture {
                         throw!(format!("Builtin field `{}` must be of type `{}`", field_name, "texture2d"));
                     }
 
-                    self.params_fft.push(EffectParamCustomFFT::new(
-                        param.downcast().unwrap(),
-                        field_name,
-                        settings,
-                        preprocess_result,
-                    )?);
-                    return Ok(());
-                }
-            }
+                    if let Some(ref param_previous) = param_previous.as_ref() {
+                        if param_previous.param_type() != Texture {
+                            throw!(format!("Builtin field `{}` must be of type `{}`", field_name, "texture2d"));
+                        }
+                    }
 
-            match param.param_type() {
-                Unknown => throw!("Cannot add an effect param of unknown type. Make sure to use HLSL type names for uniform variables."),
-                Bool  => self.params_bool.push(EffectParamCustomBool::new(param.downcast().unwrap(), &param_name, settings, preprocess_result)?),
-                Float => self.params_float.push(EffectParamCustomFloat::new(param.downcast().unwrap(), &param_name, settings, preprocess_result)?),
-                Int   => self.params_int.push(EffectParamCustomInt::new(param.downcast().unwrap(), &param_name, settings, preprocess_result)?),
-                Vec4  => self.params_vec4.push(EffectParamCustomColor::new(param.downcast().unwrap(), &param_name, settings, preprocess_result)?),
-                Vec2 | Vec3 | IVec2 | IVec3 | IVec4 | Mat4 => {
-                    throw!("Multi-component types as effect params are not yet supported.");
-                },
-                String => throw!("Strings as effect params are not yet supported."),
-                Texture => throw!("Textures as effect params are not yet supported."),
+                    self.params_fft.push(EffectParamCustomFFT::new(
+                            param.downcast().unwrap(),
+                            param_previous.map(|param_previous| param_previous.downcast().unwrap()),
+                            field_name,
+                            settings,
+                            preprocess_result,
+                    )?);
+                }
             }
         };
 
-        result.map_err(|err| {
-            Cow::Owned(format!("An error occurred while binding effect uniform variable `{}`: {}", param_name, err))
-        })
+        result?;
+
+        for (param_name, param) in params {
+            self.add_param(param, &param_name, settings, preprocess_result)
+                .map_err(|err| {
+                    Cow::Owned(format!("An error occurred while binding effect uniform variable `{}`: {}", param_name, err))
+                })?;
+        }
+
+        Ok(())
     }
 }
 

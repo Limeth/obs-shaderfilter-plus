@@ -643,13 +643,17 @@ impl UpdateSource<Data> for ScrollFocusFilter {
                 custom: Default::default(),
             };
 
-            let custom_params_iter = effect.params_iter().filter(|item| {
-                !builtin_param_names.contains(&item.name())
-            });
+            let custom_params = effect.params_iter()
+                .filter(|item| {
+                    !builtin_param_names.contains(&item.name())
+                })
+                .map(|param| {
+                    (param.name().to_string(), param)
+                })
+                // FIXME: Iterating over a hashmap does not guarantee an order
+                .collect::<HashMap<_, _>>();
 
-            for custom_param in custom_params_iter {
-                params.custom.add_param(custom_param, settings, &preprocess_result)?;
-            }
+            params.custom.add_params(custom_params, settings, &preprocess_result)?;
 
             // Drop old effect before the new one is created.
             if let Some(old_effect) = data.effect.take() {

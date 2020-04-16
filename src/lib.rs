@@ -192,30 +192,29 @@ impl GlobalStateAudioFFT {
         let current_samples = if let Some(samples) = audio_data.samples_normalized(self.descriptor.channel) {
             samples
         } else {
+            // No samples captured, bail.
             return;
         };
 
-        // FIXME: early returns make this accumulate data indefinitely
         mutable_write.sample_buffer.extend(current_samples);
+
+        let samples_per_frame = Self::get_samples_per_frame();
+        let render_frames_accumulated = mutable_write.sample_buffer.len() / samples_per_frame;
+        let render_frames_over_margin = render_frames_accumulated.saturating_sub(1);
+
+        // Get rid of old data, if we lost some frames, or if the results are not being requested.
+        if render_frames_over_margin > 0 {
+            // println!("Skipping {} render frames in FFT calculation.", render_frames_over_margin);
+
+            let samples_to_remove = samples_per_frame * render_frames_over_margin;
+            mutable_write.sample_buffer.drain(0..samples_to_remove);
+        }
 
         if !mutable_write.next_batch_scheduled.load(Ordering::SeqCst) {
             return;
         }
 
-        let samples_per_frame = Self::get_samples_per_frame();
-        let render_frames_accumulated = mutable_write.sample_buffer.len() / samples_per_frame;
-
         if render_frames_accumulated > 0 {
-            let render_frames_over_margin = render_frames_accumulated.saturating_sub(1);
-
-            // Get rid of old data, if we lost some frames.
-            if render_frames_over_margin > 0 {
-                // println!("Skipping {} render frames in FFT calculation.", render_frames_over_margin);
-
-                let samples_to_remove = samples_per_frame * render_frames_over_margin;
-                mutable_write.sample_buffer.drain(0..samples_to_remove);
-            }
-
             if mutable_write.window.len() != samples_per_frame {
                 mutable_write.window = Arc::new(self.descriptor.window_function.generate_coefficients(samples_per_frame));
             }

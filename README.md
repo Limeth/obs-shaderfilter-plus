@@ -15,7 +15,7 @@ However, if you only care about using them on Linux, for example, GLSL is fine.
 ## Installation
 1. Download the latest binary for your platform from [the Releases page](https://github.com/Limeth/obs-shaderfilter-plus/releases).
     * On Windows, download the file ending with `_windows_x64.dll`
-    * On Linux, download the file ending with `_linux_x64.dll`
+    * On Linux, download the file ending with `_linux_x64.so`
 2. Place it in the OBS plugin directory:
     * On Windows, that is usually `C:\Program Files\obs-studio\obs-plugins\64bit`
     * On Linux, that is usually `/usr/lib/obs-plugins`

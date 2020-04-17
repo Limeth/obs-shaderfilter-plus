@@ -12,6 +12,14 @@ When OBS is compiled with OpenGL support, it performs primitive translation of H
 Therefore, if you would like your shaders to run with both graphics APIs, you should write your sources in HLSL.
 However, if you only care about using them on Linux, for example, GLSL is fine.
 
+## Installation
+1. Download the latest binary for your platform from [the Releases page](https://github.com/Limeth/obs-shaderfilter-plus/releases).
+    * On Windows, download the file ending with `_windows_x64.dll`
+    * On Linux, download the file ending with `_linux_x64.dll`
+2. Place it in the OBS plugin directory:
+    * On Windows, that is usually `C:\Program Files\obs-studio\obs-plugins\64bit`
+    * On Linux, that is usually `/usr/lib/obs-plugins`
+
 ## Usage Guide
 The structure of a shader is simple. All, that is required, is the following `render` function.
 

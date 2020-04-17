@@ -440,6 +440,7 @@ dependencies = [
 [[package]]
 name = "obs-sys"
 version = "0.1.2"
+source = "git+https://github.com/Limeth/rust-obs-plugins#ad54e2850a583f8181c88f6b9783820c14f55302"
 dependencies = [
  "bindgen",
 ]
@@ -447,6 +448,7 @@ dependencies = [
 [[package]]
 name = "obs-wrapper"
 version = "0.1.5"
+source = "git+https://github.com/Limeth/rust-obs-plugins#ad54e2850a583f8181c88f6b9783820c14f55302"
 dependencies = [
  "backtrace",
  "cstr",

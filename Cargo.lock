@@ -257,9 +257,9 @@ checksum = "9b919933a397b79c37e33b77bb2aa3dc8eb6e165ad809e58ff75bc7db2e34574"
 
 [[package]]
 name = "hermit-abi"
-version = "0.1.10"
+version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "725cf19794cf90aa94e65050cb4191ff5d8fa87a498383774c47b332e3af952e"
+checksum = "8a0d737e0f947a1864e93d33fdef4af8445a00d1ed8dc0c8ddb73139ea6abf15"
 dependencies = [
  "libc",
 ]
@@ -293,9 +293,9 @@ checksum = "b294d6fa9ee409a054354afc4352b0b9ef7ca222c69b8812cbea9e7d2bf3783f"
 
 [[package]]
 name = "libc"
-version = "0.2.68"
+version = "0.2.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dea0c0405123bba743ee3f91f49b1c7cfb684eef0da0a50110f758ccf24cdff0"
+checksum = "99e85c08494b21a9054e7fe1374a732aeadaff3980b6990b94bfd3a70f690005"
 
 [[package]]
 name = "libloading"
@@ -429,7 +429,6 @@ dependencies = [
  "fourier",
  "lazy_static",
  "num-complex",
- "obs-sys",
  "obs-wrapper",
  "ordered-float",
  "paste",
@@ -440,7 +439,7 @@ dependencies = [
 [[package]]
 name = "obs-sys"
 version = "0.1.2"
-source = "git+https://github.com/Limeth/rust-obs-plugins#ad54e2850a583f8181c88f6b9783820c14f55302"
+source = "git+https://github.com/Limeth/rust-obs-plugins#ddb05106e56667d654cc1e4ac6fde4a3e808bd4f"
 dependencies = [
  "bindgen",
 ]
@@ -448,7 +447,7 @@ dependencies = [
 [[package]]
 name = "obs-wrapper"
 version = "0.1.5"
-source = "git+https://github.com/Limeth/rust-obs-plugins#ad54e2850a583f8181c88f6b9783820c14f55302"
+source = "git+https://github.com/Limeth/rust-obs-plugins#ddb05106e56667d654cc1e4ac6fde4a3e808bd4f"
 dependencies = [
  "backtrace",
  "cstr",
@@ -730,9 +729,9 @@ dependencies = [
 
 [[package]]
 name = "typenum"
-version = "1.11.2"
+version = "1.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6d2783fe2d6b8c1101136184eb41be8b1ad379e4657050b8aaff0c79ee7575f9"
+checksum = "373c8a200f9e67a0c95e62a4f52fbf80c23b4381c05a17845531982fa99e6b33"
 
 [[package]]
 name = "unicode-width"

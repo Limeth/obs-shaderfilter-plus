@@ -8,7 +8,7 @@ use std::fs::File;
 use std::ffi::{CStr, CString};
 use std::io::Read;
 use ammolite_math::*;
-use obs_sys::{
+use obs_wrapper::obs_sys::{
     MAX_AUDIO_MIXES,
     MAX_AUDIO_CHANNELS,
 };

@@ -12,9 +12,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 obs-wrapper = { git = "https://github.com/Limeth/rust-obs-plugins" }
-obs-sys = { git = "https://github.com/Limeth/rust-obs-plugins" }
 # obs-wrapper = { path = "../rust-obs-plugins" }
-# obs-sys = { path = "../rust-obs-plugins/obs-sys" }
 regex = "1"
 anyhow = "1.0"
 ammolite-math = { git = "https://github.com/metaview-org/ammolite" }

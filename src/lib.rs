@@ -394,7 +394,10 @@ impl GlobalState {
 struct Data {
     source: SourceContext,
     effect: Option<PreparedEffect>,
+
     creation: Instant,
+    next_frame: u32,
+    elapsed_time_previous: Option<f32>,
 
     property_shader: PropertyDescriptor<PropertyDescriptorSpecializationPath>,
     property_shader_reload: PropertyDescriptor<PropertyDescriptorSpecializationButton>,
@@ -410,6 +413,8 @@ impl Data {
             source,
             effect: None,
             creation: Instant::now(),
+            next_frame: 0,
+            elapsed_time_previous: None,
             property_shader: PropertyDescriptor {
                 name: CString::new("shader").unwrap(),
                 description: CString::new("The shader to use.").unwrap(),
@@ -491,10 +496,20 @@ impl VideoTickSource<Data> for ScrollFocusFilter {
             return;
         };
 
+        let frame = data.next_frame;
+        data.next_frame += 1;
+        let framerate = ObsVideoInfo::get().map(|info| info.framerate().as_f32()).unwrap_or(0.0);
+        let elapsed_time = data.creation.elapsed().as_secs_f32();
+        let elapsed_time_previous = data.elapsed_time_previous.replace(elapsed_time)
+            .unwrap_or(elapsed_time);
+
         if let Some(effect) = data.effect.as_mut() {
             let params = &mut effect.params;
 
-            params.elapsed_time.prepare_value(data.creation.elapsed().as_secs_f32());
+            params.frame.prepare_value(frame as i32);
+            params.framerate.prepare_value(framerate);
+            params.elapsed_time.prepare_value(elapsed_time);
+            params.elapsed_time_previous.prepare_value(elapsed_time_previous);
             params.uv_size.prepare_value([
                 data.source.get_base_width() as i32,
                 data.source.get_base_height() as i32,
@@ -638,7 +653,10 @@ impl UpdateSource<Data> for ScrollFocusFilter {
             }
 
             let mut params = EffectParams {
+                frame: builtin_effect!("builtin_frame"),
+                framerate: builtin_effect!("builtin_framerate"),
                 elapsed_time: builtin_effect!("builtin_elapsed_time"),
+                elapsed_time_previous: builtin_effect!("builtin_elapsed_time_previous"),
                 uv_size: builtin_effect!("builtin_uv_size"),
                 custom: Default::default(),
             };

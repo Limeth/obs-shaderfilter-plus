@@ -338,26 +338,38 @@ impl EffectParamsCustom {
 }
 
 pub struct EffectParams {
+    pub frame: EffectParamInt,
+    pub framerate: EffectParamFloat,
     pub elapsed_time: EffectParamFloat,
+    pub elapsed_time_previous: EffectParamFloat,
     pub uv_size: EffectParamIVec2,
     pub custom: EffectParamsCustom,
 }
 
 impl EffectParams {
     pub fn stage_values(&mut self, graphics_context: &GraphicsContext) {
+        self.frame.stage_value(graphics_context);
+        self.framerate.stage_value(graphics_context);
         self.elapsed_time.stage_value(graphics_context);
+        self.elapsed_time_previous.stage_value(graphics_context);
         self.uv_size.stage_value(graphics_context);
         self.custom.stage_values(graphics_context);
     }
 
     pub fn assign_values(&mut self, graphics_context: &FilterContext) {
+        self.frame.assign_value(graphics_context);
+        self.framerate.assign_value(graphics_context);
         self.elapsed_time.assign_value(graphics_context);
+        self.elapsed_time_previous.assign_value(graphics_context);
         self.uv_size.assign_value(graphics_context);
         self.custom.assign_values(graphics_context);
     }
 
     pub fn enable_and_drop(self, graphics_context: &GraphicsContext) {
+        self.frame.enable_and_drop(graphics_context);
+        self.framerate.enable_and_drop(graphics_context);
         self.elapsed_time.enable_and_drop(graphics_context);
+        self.elapsed_time_previous.enable_and_drop(graphics_context);
         self.uv_size.enable_and_drop(graphics_context);
         self.custom.enable_and_drop(graphics_context);
     }

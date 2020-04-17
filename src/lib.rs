@@ -420,7 +420,7 @@ impl Data {
                 description: CString::new("The shader to use.").unwrap(),
                 specialization: PropertyDescriptorSpecializationPath {
                     path_type: PathType::File,
-                    filter: CString::from(cstr!("*.glsl *.frag *.fragment ;; All File Types | *.*")),
+                    filter: CString::from(cstr!("*.hlsl *.glsl *.frag *.fragment ;; All File Types | *.*")),
                     default_path: CString::from(cstr!("")),
                 },
             },

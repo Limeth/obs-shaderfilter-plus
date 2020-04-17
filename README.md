@@ -3,7 +3,7 @@ OBS ShaderFilter Plus is a plugin for Open Broadcaster Software.
 It can be used to apply effects to sources using manually created GLSL/HLSL shaders.
 Add a filter to a source by right-clicking a source, going to `Filters`, and adding `ShaderFilter Plus`.
 
-Shaders are run executed in OpenGL (GLSL shaders) or DirectX (HLSL shaders),
+Shaders are executed using OpenGL (GLSL shaders) or DirectX (HLSL shaders),
 depending on your platform.
 OBS on Windows usually uses DirectX, but can be compiled with OpenGL support.
 OBS on Linux uses OpenGL.

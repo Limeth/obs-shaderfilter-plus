@@ -1,5 +1,6 @@
 #![feature(try_blocks)]
 #![feature(clamp)]
+#![feature(c_variadic)]
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -653,17 +654,22 @@ impl UpdateSource<Data> for ScrollFocusFilter {
 
             let graphics_context = GraphicsContext::enter()
                 .expect("Could not enter a graphics context.");
-            let effect = GraphicsEffect::from_effect_string(
-                effect_source_c.as_c_str(),
-                shader_path_c.as_c_str(),
-                &graphics_context,
-            ).map_err(|err| {
-                if let Some(err) = err {
-                    Cow::Owned(format!("Could not create the effect due to the following error: {}", err))
-                } else {
-                    Cow::Borrowed("Could not create the effect due to an unknown error. Check the OBS log for more information.")
-                }
-            })?;
+            let effect = {
+                let capture = LogCaptureHandler::new(LogLevel::Error).unwrap();
+                let result = GraphicsEffect::from_effect_string(
+                    effect_source_c.as_c_str(),
+                    shader_path_c.as_c_str(),
+                    &graphics_context,
+                );
+
+                result.map_err(|err| {
+                    if let Some(err) = err {
+                        Cow::Owned(format!("Could not create the effect due to the following error: {}", err))
+                    } else {
+                        Cow::Owned(format!("Could not create the effect due to the following error:\n{}", capture.to_string()))
+                    }
+                })
+            }?;
             let mut builtin_param_names = vec!["ViewProj", "image"];
 
             macro_rules! builtin_effect {

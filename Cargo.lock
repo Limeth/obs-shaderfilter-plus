@@ -441,7 +441,6 @@ dependencies = [
  "paste",
  "regex",
  "smallvec",
- "textwrap",
 ]
 
 [[package]]

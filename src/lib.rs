@@ -625,7 +625,7 @@ impl UpdateSource<Data> for ScrollFocusFilter {
                     "Specified shader path is not a valid UTF-8 string."
                 })?
             ).map_err(|_| "Shader path cannot be converted to a C string.")?;
-            let effect_source_c = CString::new(effect_source)
+            let effect_source_c = CString::new(effect_source.clone())
                 .map_err(|_| "Shader contents cannot be converted to a C string.")?;
 
             let graphics_context = GraphicsContext::enter()
@@ -683,10 +683,13 @@ impl UpdateSource<Data> for ScrollFocusFilter {
 
             data.effect = Some(PreparedEffect {
                 effect: effect.disable(),
+                effect_source: effect_source.clone(),
                 params,
             });
 
-            data.source.update_source_properties();
+            if data.effect.is_none() || data.effect.as_ref().unwrap().effect_source != effect_source {
+                data.source.update_source_properties();
+            }
         };
 
         if let Err(error_message) = result {

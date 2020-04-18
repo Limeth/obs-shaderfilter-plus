@@ -259,6 +259,7 @@ impl EffectParams {
 
 pub struct PreparedEffect {
     pub effect: GraphicsContextDependentDisabled<GraphicsEffect>,
+    pub effect_source: String,
     pub params: EffectParams,
 }
 

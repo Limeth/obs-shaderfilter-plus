@@ -213,7 +213,9 @@ impl<T: EffectParamType> EffectParam<T> {
     }
 }
 
-pub trait EffectParamCustom: Sized {
+// A helper trait to ensure most custom effect params follow the same structure.
+// Not all custom effect params implement this trait, however.
+pub trait EffectParamCustom: BindableProperty + Sized {
     type ShaderParamType: ShaderParamType;
     type PropertyDescriptorSpecialization: PropertyDescriptorSpecialization;
 
@@ -223,11 +225,6 @@ pub trait EffectParamCustom: Sized {
         settings: &mut SettingsContext,
         preprocess_result: &PreprocessResult,
     ) -> Result<Self, Cow<'static, str>>;
-    fn add_properties(&self, properties: &mut Properties);
-    fn prepare_values(&mut self);
-    fn stage_value<'a>(&mut self, graphics_context: &'a GraphicsContext);
-    fn assign_value<'a>(&mut self, graphics_context: &'a FilterContext);
-    fn enable_and_drop(self, graphics_context: &GraphicsContext);
 }
 
 pub struct EffectParamCustomBool {
@@ -265,7 +262,9 @@ impl EffectParamCustom for EffectParamCustomBool {
             effect_param,
         })
     }
+}
 
+impl BindableProperty for EffectParamCustomBool {
     fn add_properties(&self, properties: &mut Properties) {
         self.property.add_properties(properties);
     }
@@ -325,7 +324,9 @@ impl EffectParamCustom for EffectParamCustomInt {
             effect_param,
         })
     }
+}
 
+impl BindableProperty for EffectParamCustomInt {
     fn add_properties(&self, properties: &mut Properties) {
         self.property.add_properties(properties);
     }
@@ -385,7 +386,9 @@ impl EffectParamCustom for EffectParamCustomFloat {
             effect_param,
         })
     }
+}
 
+impl BindableProperty for EffectParamCustomFloat {
     fn add_properties(&self, properties: &mut Properties) {
         self.property.add_properties(properties);
     }
@@ -440,7 +443,9 @@ impl EffectParamCustom for EffectParamCustomColor {
             effect_param,
         })
     }
+}
 
+impl BindableProperty for EffectParamCustomColor {
     fn add_properties(&self, properties: &mut Properties) {
         self.property.add_properties(properties);
     }
@@ -456,6 +461,167 @@ impl EffectParamCustom for EffectParamCustomColor {
     }
 
     fn enable_and_drop(self, graphics_context: &GraphicsContext) {
+        self.effect_param.enable_and_drop(graphics_context);
+    }
+}
+
+pub struct EffectParamCustomFFT {
+    pub effect_param: EffectParamTexture,
+    pub effect_param_previous: Option<EffectParamTexture>,
+    pub audio_fft: Arc<GlobalStateAudioFFT>,
+    pub property_mix: LoadedValueTypeProperty<LoadedValueTypePropertyDescriptorI32>,
+    pub property_channel: LoadedValueTypeProperty<LoadedValueTypePropertyDescriptorI32>,
+    pub property_dampening_factor_attack: LoadedValueTypeProperty<LoadedValueTypePropertyDescriptorF64>,
+    pub property_dampening_factor_release: LoadedValueTypeProperty<LoadedValueTypePropertyDescriptorF64>,
+}
+
+// Does not implement EffectParamCustom because of different argument requirements
+impl EffectParamCustomFFT {
+    pub fn new<'a>(
+        param: GraphicsContextDependentEnabled<'a, GraphicsEffectParamTyped<ShaderParamTypeTexture>>,
+        param_previous: Option<GraphicsContextDependentEnabled<'a, GraphicsEffectParamTyped<ShaderParamTypeTexture>>>,
+        identifier: &str,
+        settings: &mut SettingsContext,
+        preprocess_result: &PreprocessResult,
+    ) -> Result<Self, Cow<'static, str>> {
+        let property_mix = <LoadedValueTypeProperty<_> as LoadedValueType>::from(
+            LoadedValueTypePropertyArgs {
+                allow_definitions_in_source: false,
+                default_value: 1,
+                default_descriptor_specialization: PropertyDescriptorSpecializationI32 {
+                    min: 1,
+                    max: MAX_AUDIO_MIXES as i32,
+                    step: 1,
+                    slider: false,
+                },
+            },
+            identifier,
+            Some("mix"),
+            preprocess_result,
+            settings,
+        )?;
+        let property_channel = <LoadedValueTypeProperty<_> as LoadedValueType>::from(
+            LoadedValueTypePropertyArgs {
+                allow_definitions_in_source: false,
+                default_value: 1,
+                default_descriptor_specialization: PropertyDescriptorSpecializationI32 {
+                    min: 1,
+                    max: 2, // FIXME: Causes crashes when `MAX_AUDIO_CHANNELS as i32` is used, supposedly fixed in next OBS release
+                    step: 1,
+                    slider: false,
+                },
+            },
+            identifier,
+            Some("channel"),
+            preprocess_result,
+            settings,
+        )?;
+        let property_dampening_factor_attack = <LoadedValueTypeProperty<_> as LoadedValueType>::from(
+            LoadedValueTypePropertyArgs {
+                allow_definitions_in_source: true,
+                default_value: 0.0,
+                default_descriptor_specialization: PropertyDescriptorSpecializationF64 {
+                    min: 0.0,
+                    max: 100.0,
+                    step: 0.01,
+                    slider: true,
+                },
+            },
+            identifier,
+            Some("dampening_factor_attack"),
+            preprocess_result,
+            settings,
+        )?;
+        let property_dampening_factor_release = <LoadedValueTypeProperty<_> as LoadedValueType>::from(
+            LoadedValueTypePropertyArgs {
+                allow_definitions_in_source: true,
+                default_value: 0.0,
+                default_descriptor_specialization: PropertyDescriptorSpecializationF64 {
+                    min: 0.0,
+                    max: 100.0,
+                    step: 0.01,
+                    slider: true,
+                },
+            },
+            identifier,
+            Some("dampening_factor_release"),
+            preprocess_result,
+            settings,
+        )?;
+
+        let audio_fft_descriptor = GlobalStateAudioFFTDescriptor::new(
+            property_mix.get_value() as usize - 1,
+            property_channel.get_value() as usize - 1,
+            property_dampening_factor_attack.get_value() / 100.0,
+            property_dampening_factor_release.get_value() / 100.0,
+            // TODO: Make customizable, but provide a sane default value
+            WindowFunction::Hanning,
+        );
+
+        Ok(Self {
+            effect_param: EffectParam::new(param.disable()),
+            effect_param_previous: param_previous.map(|param_previous| EffectParam::new(param_previous.disable())),
+            audio_fft: GLOBAL_STATE.request_audio_fft(&audio_fft_descriptor),
+            property_mix,
+            property_channel,
+            property_dampening_factor_attack,
+            property_dampening_factor_release,
+        })
+    }
+}
+
+impl BindableProperty for EffectParamCustomFFT {
+    fn add_properties(&self, properties: &mut Properties) {
+        self.property_mix.add_properties(properties);
+        self.property_channel.add_properties(properties);
+        self.property_dampening_factor_attack.add_properties(properties);
+        self.property_dampening_factor_release.add_properties(properties);
+    }
+
+    fn prepare_values(&mut self) {
+        let fft_result = if let Some(result) = self.audio_fft.retrieve_result() {
+            result
+        } else {
+            return;
+        };
+        let frequency_spectrum = &fft_result.frequency_spectrum;
+        let texture_data = unsafe {
+            std::slice::from_raw_parts::<u8>(
+                frequency_spectrum.as_ptr() as *const _,
+                frequency_spectrum.len() * std::mem::size_of::<f32>(),
+            )
+        }.iter().copied().collect::<Vec<_>>();
+        let texture_fft = TextureDescriptor {
+            dimensions: [frequency_spectrum.len(), 1],
+            color_format: ColorFormatKind::R32F,
+            levels: smallvec![texture_data],
+            flags: 0,
+        };
+
+        self.effect_param.prepare_value(texture_fft);
+    }
+
+    fn stage_value<'a>(&mut self, graphics_context: &'a GraphicsContext) {
+        if let Some(effect_param_previous) = self.effect_param_previous.as_mut() {
+            if let Some(previous_texture_fft) = self.effect_param.take_staged_value() {
+                effect_param_previous.stage_value_custom(previous_texture_fft, graphics_context);
+            }
+        }
+
+        self.effect_param.stage_value(graphics_context);
+    }
+
+    fn assign_value<'a>(&mut self, graphics_context: &'a FilterContext) {
+        if let Some(effect_param_previous) = self.effect_param_previous.as_mut() {
+            effect_param_previous.assign_value_if_staged(graphics_context);
+        }
+        self.effect_param.assign_value_if_staged(graphics_context);
+    }
+
+    fn enable_and_drop(self, graphics_context: &GraphicsContext) {
+        if let Some(effect_param_previous) = self.effect_param_previous {
+            effect_param_previous.enable_and_drop(graphics_context);
+        }
         self.effect_param.enable_and_drop(graphics_context);
     }
 }

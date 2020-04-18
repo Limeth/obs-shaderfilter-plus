@@ -206,6 +206,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "811daaf89cb7b96652e6d3ef8044ee6418d1c3804d8cde198197303e27163022"
 
 [[package]]
+name = "downcast-rs"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "52ba6eb47c2131e784a38b726eb54c1e1484904f013e576a25354d0124161af6"
+
+[[package]]
 name = "env_logger"
 version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -426,6 +432,7 @@ dependencies = [
  "ammolite-math",
  "anyhow",
  "apodize",
+ "downcast-rs",
  "fourier",
  "lazy_static",
  "num-complex",

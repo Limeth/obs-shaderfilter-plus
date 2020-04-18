@@ -26,6 +26,7 @@ use obs_wrapper::{
 use regex::Regex;
 use fourier::*;
 use num_complex::Complex;
+use util::*;
 use effect::*;
 use preprocessor::*;
 
@@ -36,6 +37,7 @@ macro_rules! throw {
     }}
 }
 
+mod util;
 mod effect;
 mod preprocessor;
 
@@ -665,13 +667,14 @@ impl UpdateSource<Data> for ScrollFocusFilter {
                 .filter(|item| {
                     !builtin_param_names.contains(&item.name())
                 })
-                .map(|param| {
-                    (param.name().to_string(), param)
+                .enumerate()
+                .map(|(index, param)| {
+                    (param.name().to_string(), Indexed::from((index, param)))
                 })
                 // FIXME: Iterating over a hashmap does not guarantee an order
                 .collect::<HashMap<_, _>>();
 
-            params.custom.add_params(custom_params, settings, &preprocess_result)?;
+            params.custom = EffectParamsCustom::from(custom_params, settings, &preprocess_result)?;
 
             // Drop old effect before the new one is created.
             if let Some(old_effect) = data.effect.take() {

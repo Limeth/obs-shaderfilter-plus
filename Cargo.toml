@@ -11,8 +11,8 @@ crate-type = ["cdylib"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-obs-wrapper = { git = "https://github.com/Limeth/rust-obs-plugins" }
-#obs-wrapper = { path = "../rust-obs-plugins" }
+# obs-wrapper = { git = "https://github.com/Limeth/rust-obs-plugins" }
+obs-wrapper = { path = "../rust-obs-plugins" }
 regex = "1"
 anyhow = "1.0"
 ammolite-math = { git = "https://github.com/metaview-org/ammolite" }
@@ -24,3 +24,4 @@ paste = "0.1.7"
 ordered-float = "1.0"
 apodize = "1.0"
 downcast = { package = "downcast-rs", version = "1.1" }
+textwrap = "0.11"

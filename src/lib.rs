@@ -403,6 +403,8 @@ struct Data {
 
     property_shader: PropertyDescriptor<PropertyDescriptorSpecializationPath>,
     property_shader_reload: PropertyDescriptor<PropertyDescriptorSpecializationButton>,
+    property_message: PropertyDescriptor<PropertyDescriptorSpecializationString>,
+    property_message_display: bool,
 
     settings_update_requested: Arc<AtomicBool>,
 }
@@ -439,6 +441,14 @@ impl Data {
                     }),
                 )
             },
+            property_message: PropertyDescriptor {
+                name: CString::new("message").unwrap(),
+                description: CString::new("").unwrap(),
+                specialization: PropertyDescriptorSpecializationString {
+                    string_type: StringType::Multiline,
+                }
+            },
+            property_message_display: false,
             settings_update_requested,
         }
     }
@@ -480,6 +490,10 @@ impl GetPropertiesSource<Data> for ScrollFocusFilter {
 
         properties.add_property(&data.property_shader);
         properties.add_property(&data.property_shader_reload);
+
+        if data.property_message_display {
+            properties.add_property(&data.property_message);
+        }
 
         if let Some(effect) = data.effect.as_ref() {
             effect.add_properties(&mut properties);
@@ -593,6 +607,15 @@ impl UpdateSource<Data> for ScrollFocusFilter {
             let (data, settings) = context.data_settings_mut();
             let data = data.as_mut().ok_or_else(|| "Could not access the data.")?;
 
+            // Drop old effect before the new one is created.
+            let old_effect_source = data.effect.take().map(|old_effect| {
+                let graphics_context = GraphicsContext::enter()
+                    .expect("Could not enter a graphics context.");
+                let old_effect_source = old_effect.effect_source.clone();
+                old_effect.enable_and_drop(&graphics_context);
+                old_effect_source
+            });
+
             const EFFECT_SOURCE_TEMPLATE: &'static str = include_str!("effect_template.effect");
             let shader_path = settings.get_property_value(&data.property_shader, &PathBuf::new());
             let mut shader_file = File::open(&shader_path)
@@ -634,7 +657,13 @@ impl UpdateSource<Data> for ScrollFocusFilter {
                 effect_source_c.as_c_str(),
                 shader_path_c.as_c_str(),
                 &graphics_context,
-            ).ok_or_else(|| "Could not create the effect.")?;
+            ).map_err(|err| {
+                if let Some(err) = err {
+                    Cow::Owned(format!("Could not create the effect due to the following error: {}", err))
+                } else {
+                    Cow::Borrowed("Could not create the effect due to an unknown error. Check the OBS log for more information.")
+                }
+            })?;
             let mut builtin_param_names = vec!["ViewProj", "image"];
 
             macro_rules! builtin_effect {
@@ -671,15 +700,9 @@ impl UpdateSource<Data> for ScrollFocusFilter {
                 .map(|(index, param)| {
                     (param.name().to_string(), Indexed::from((index, param)))
                 })
-                // FIXME: Iterating over a hashmap does not guarantee an order
                 .collect::<HashMap<_, _>>();
 
             params.custom = EffectParamsCustom::from(custom_params, settings, &preprocess_result)?;
-
-            // Drop old effect before the new one is created.
-            if let Some(old_effect) = data.effect.take() {
-                old_effect.enable_and_drop(&graphics_context);
-            }
 
             data.effect = Some(PreparedEffect {
                 effect: effect.disable(),
@@ -687,13 +710,28 @@ impl UpdateSource<Data> for ScrollFocusFilter {
                 params,
             });
 
-            if data.effect.is_none() || data.effect.as_ref().unwrap().effect_source != effect_source {
+            if old_effect_source.is_none() || old_effect_source.unwrap() != effect_source {
+                data.property_message_display = false;
+
+                settings.set_property_value(&data.property_message, CString::new("").unwrap());
                 data.source.update_source_properties();
             }
         };
 
         if let Err(error_message) = result {
             println!("An error occurred while updating a ShaderFilter Plus filter: {}", error_message);
+
+            let (data, settings) = context.data_settings_mut();
+
+            if let Some(data) = data.as_mut() {
+                data.property_message_display = true;
+
+                settings.set_property_value(
+                    &data.property_message,
+                    CString::new(error_message.as_ref()).unwrap(),
+                );
+                data.source.update_source_properties();
+            }
         }
     }
 }

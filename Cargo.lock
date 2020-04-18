@@ -441,12 +441,12 @@ dependencies = [
  "paste",
  "regex",
  "smallvec",
+ "textwrap",
 ]
 
 [[package]]
 name = "obs-sys"
 version = "0.1.2"
-source = "git+https://github.com/Limeth/rust-obs-plugins#c0661181ce6959fa3662eefc07cb5c302512f9d5"
 dependencies = [
  "bindgen",
 ]
@@ -454,7 +454,6 @@ dependencies = [
 [[package]]
 name = "obs-wrapper"
 version = "0.1.5"
-source = "git+https://github.com/Limeth/rust-obs-plugins#c0661181ce6959fa3662eefc07cb5c302512f9d5"
 dependencies = [
  "backtrace",
  "cstr",

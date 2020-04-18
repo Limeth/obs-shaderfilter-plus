@@ -12,7 +12,6 @@ use std::fs::File;
 use std::ffi::{CStr, CString};
 use std::io::Read;
 use ordered_float::OrderedFloat;
-use ammolite_math::*;
 use smallvec::{SmallVec, smallvec};
 use lazy_static::lazy_static;
 use obs_wrapper::{

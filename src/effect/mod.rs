@@ -112,8 +112,15 @@ impl EffectParamsCustom {
             Cow::Owned(format!("An error occurred while binding effect uniform variable: {}", err))
         })?;
 
+        let pattern_param_builtin = Regex::new(r"^builtin_").unwrap();
+
         for (_index, param) in params {
             let param_name = param.name().to_string();
+
+            // Ensure custom uniform properties do not conflict with builtin properties.
+            if pattern_param_builtin.is_match(&param_name) {
+                throw!(format!("Unrecognized `builtin_` uniform variable type: {}", &param_name));
+            }
 
             Self::add_param(&mut bound_params, param, &param_name, settings, preprocess_result)
                 .map_err(|err| {
@@ -258,7 +265,7 @@ impl EffectParams {
 
 pub struct PreparedEffect {
     pub effect: GraphicsContextDependentDisabled<GraphicsEffect>,
-    pub effect_source: String,
+    pub shader_source: String,
     pub params: EffectParams,
 }
 

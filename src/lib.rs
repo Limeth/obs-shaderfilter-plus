@@ -420,7 +420,7 @@ impl Data {
             next_frame: 0,
             elapsed_time_previous: None,
             property_shader: PropertyDescriptor {
-                name: CString::new("shader").unwrap(),
+                name: CString::new("builtin_ui_shader").unwrap(),
                 description: CString::new("The shader to use.").unwrap(),
                 specialization: PropertyDescriptorSpecializationPath {
                     path_type: PathType::File,
@@ -429,7 +429,7 @@ impl Data {
                 },
             },
             property_shader_reload: PropertyDescriptor {
-                name: CString::new("shader_reload").unwrap(),
+                name: CString::new("builtin_ui_shader_reload").unwrap(),
                 description: CString::new("Reload Shader").unwrap(),
                 specialization: PropertyDescriptorSpecializationButton::new(
                     Box::new({
@@ -442,7 +442,7 @@ impl Data {
                 )
             },
             property_message: PropertyDescriptor {
-                name: CString::new("message").unwrap(),
+                name: CString::new("builtin_ui_message").unwrap(),
                 description: CString::new("").unwrap(),
                 specialization: PropertyDescriptorSpecializationString {
                     string_type: StringType::Multiline,
@@ -484,6 +484,10 @@ impl GetNameSource<Data> for ScrollFocusFilter {
 }
 
 impl GetPropertiesSource<Data> for ScrollFocusFilter {
+    /// Convention for naming properties, so that they do not conflict:
+    /// `builtin_ui_*` -- UI-only properties (not sent to the GPU), like the shader path
+    /// `builtin_*` -- Properties either sent to the GPU or influencing other properties which are sent to the GPU
+    /// `*` --  Custom uniform properties defined by the user, must not begin with `builtin_`
     fn get_properties(context: PluginContext<Data>) -> Properties {
         let data = context.data().as_ref().unwrap();
         let mut properties = Properties::new();
@@ -608,12 +612,12 @@ impl UpdateSource<Data> for ScrollFocusFilter {
             let data = data.as_mut().ok_or_else(|| "Could not access the data.")?;
 
             // Drop old effect before the new one is created.
-            let old_effect_source = data.effect.take().map(|old_effect| {
+            let old_shader_source = data.effect.take().map(|old_effect| {
                 let graphics_context = GraphicsContext::enter()
                     .expect("Could not enter a graphics context.");
-                let old_effect_source = old_effect.effect_source.clone();
+                let old_shader_source = old_effect.shader_source.clone();
                 old_effect.enable_and_drop(&graphics_context);
-                old_effect_source
+                old_shader_source
             });
 
             const EFFECT_SOURCE_TEMPLATE: &'static str = include_str!("effect_template.effect");
@@ -629,14 +633,14 @@ impl UpdateSource<Data> for ScrollFocusFilter {
 
                     format!("Shader not found at the specified path: {:?}", &shader_path)
                 })?;
-
+            let shader_source = {
+                let mut shader_source = String::new();
+                shader_file.read_to_string(&mut shader_source).expect("Could not read the shader at the given path.");
+                shader_source
+            };
             let (preprocess_result, effect_source) = {
-                let mut shader = String::new();
-
-                shader_file.read_to_string(&mut shader).expect("Could not read the shader at the given path.");
-
                 let pattern = Regex::new(r"(?P<shader>__SHADER__)").unwrap();
-                let effect_source = pattern.replace_all(EFFECT_SOURCE_TEMPLATE, shader.as_str());
+                let effect_source = pattern.replace_all(EFFECT_SOURCE_TEMPLATE, shader_source.as_str());
 
                 let (preprocess_result, effect_source) = preprocess(&effect_source);
 
@@ -711,11 +715,11 @@ impl UpdateSource<Data> for ScrollFocusFilter {
 
             data.effect = Some(PreparedEffect {
                 effect: effect.disable(),
-                effect_source: effect_source.clone(),
+                shader_source: shader_source.clone(),
                 params,
             });
 
-            if old_effect_source.is_none() || old_effect_source.unwrap() != effect_source {
+            if old_shader_source.is_none() || old_shader_source.unwrap() != shader_source {
                 data.property_message_display = false;
 
                 settings.set_property_value(&data.property_message, CString::new("").unwrap());

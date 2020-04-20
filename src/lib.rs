@@ -1,6 +1,8 @@
 #![feature(try_blocks)]
 #![feature(clamp)]
 #![feature(c_variadic)]
+#![feature(trait_alias)]
+#![feature(associated_type_bounds)]
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -608,19 +610,9 @@ impl UpdateSource<Data> for ScrollFocusFilter {
         mut context: PluginContext<Data>,
     ) {
         let result: Result<(), Cow<str>> = try {
-            let (data, settings) = context.data_settings_mut();
+            let (data, mut settings) = context.data_settings_mut();
             let data = data.as_mut().ok_or_else(|| "Could not access the data.")?;
 
-            // Drop old effect before the new one is created.
-            let old_shader_source = data.effect.take().map(|old_effect| {
-                let graphics_context = GraphicsContext::enter()
-                    .expect("Could not enter a graphics context.");
-                let old_shader_source = old_effect.shader_source.clone();
-                old_effect.enable_and_drop(&graphics_context);
-                old_shader_source
-            });
-
-            const EFFECT_SOURCE_TEMPLATE: &'static str = include_str!("effect_template.effect");
             let shader_path = settings.get_property_value(&data.property_shader, &PathBuf::new());
             let mut shader_file = File::open(&shader_path)
                 .map_err(|_| {
@@ -638,41 +630,22 @@ impl UpdateSource<Data> for ScrollFocusFilter {
                 shader_file.read_to_string(&mut shader_source).expect("Could not read the shader at the given path.");
                 shader_source
             };
-            let (preprocess_result, effect_source) = {
-                let pattern = Regex::new(r"(?P<shader>__SHADER__)").unwrap();
-                let effect_source = pattern.replace_all(EFFECT_SOURCE_TEMPLATE, shader_source.as_str());
+            let old_shader_source = data.effect.as_ref().map(|old_effect| {
+                old_effect.shader_source.clone()
+            });
 
-                let (preprocess_result, effect_source) = preprocess(&effect_source);
+            if old_shader_source.is_some() && old_shader_source.unwrap() == shader_source {
+                // Only update the params, if the shader stayed the same
+                let effect = data.effect.as_mut().unwrap();
+                effect.params.reload_settings(&mut settings);
+                return;
+            }
 
-                (preprocess_result, effect_source.into_owned())
-            };
+            println!("Shader source changed, recreating effect.");
 
-            let shader_path_c = CString::new(
-                shader_path.to_str().ok_or_else(|| {
-                    "Specified shader path is not a valid UTF-8 string."
-                })?
-            ).map_err(|_| "Shader path cannot be converted to a C string.")?;
-            let effect_source_c = CString::new(effect_source.clone())
-                .map_err(|_| "Shader contents cannot be converted to a C string.")?;
-
-            let graphics_context = GraphicsContext::enter()
-                .expect("Could not enter a graphics context.");
-            let effect = {
-                let capture = LogCaptureHandler::new(LogLevel::Error).unwrap();
-                let result = GraphicsEffect::from_effect_string(
-                    effect_source_c.as_c_str(),
-                    shader_path_c.as_c_str(),
-                    &graphics_context,
-                );
-
-                result.map_err(|err| {
-                    if let Some(err) = err {
-                        Cow::Owned(format!("Could not create the effect due to the following error: {}", err))
-                    } else {
-                        Cow::Owned(format!("Could not create the effect due to the following error:\n{}", capture.to_string()))
-                    }
-                })
-            }?;
+            // If shader source changed, create a new effect and request to update properties
+            let graphics_context = GraphicsContext::enter().unwrap();
+            let (effect, preprocess_result) = PreparedEffect::create_effect(&shader_path, &shader_source, &graphics_context)?;
             let mut builtin_param_names = vec!["ViewProj", "image"];
 
             macro_rules! builtin_effect {
@@ -713,18 +686,23 @@ impl UpdateSource<Data> for ScrollFocusFilter {
 
             params.custom = EffectParamsCustom::from(custom_params, settings, &preprocess_result)?;
 
-            data.effect = Some(PreparedEffect {
+            let effect = PreparedEffect {
                 effect: effect.disable(),
                 shader_source: shader_source.clone(),
                 params,
-            });
+            };
 
-            if old_shader_source.is_none() || old_shader_source.unwrap() != shader_source {
-                data.property_message_display = false;
-
-                settings.set_property_value(&data.property_message, CString::new("").unwrap());
-                data.source.update_source_properties();
+            // Drop old effect before the new one is created.
+            if let Some(old_effect) = data.effect.replace(effect) {
+                let graphics_context = GraphicsContext::enter()
+                    .expect("Could not enter a graphics context.");
+                old_effect.enable_and_drop(&graphics_context);
             }
+
+            data.property_message_display = false;
+
+            settings.set_property_value(&data.property_message, CString::new("").unwrap());
+            data.source.update_source_properties();
         };
 
         if let Err(error_message) = result {

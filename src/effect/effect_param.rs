@@ -268,6 +268,11 @@ impl BindableProperty for EffectParamCustomBool {
         self.property.add_properties(properties);
     }
 
+    fn reload_settings(&mut self, settings: &mut SettingsContext) {
+        self.property.reload_settings(settings);
+        self.effect_param.prepare_value(self.property.get_value());
+    }
+
     fn prepare_values(&mut self) {}
 
     fn stage_value<'a>(&mut self, graphics_context: &'a GraphicsContext) {
@@ -328,6 +333,11 @@ impl EffectParamCustom for EffectParamCustomInt {
 impl BindableProperty for EffectParamCustomInt {
     fn add_properties(&self, properties: &mut Properties) {
         self.property.add_properties(properties);
+    }
+
+    fn reload_settings(&mut self, settings: &mut SettingsContext) {
+        self.property.reload_settings(settings);
+        self.effect_param.prepare_value(self.property.get_value());
     }
 
     fn prepare_values(&mut self) {}
@@ -392,6 +402,11 @@ impl BindableProperty for EffectParamCustomFloat {
         self.property.add_properties(properties);
     }
 
+    fn reload_settings(&mut self, settings: &mut SettingsContext) {
+        self.property.reload_settings(settings);
+        self.effect_param.prepare_value(self.property.get_value() as f32);
+    }
+
     fn prepare_values(&mut self) {}
 
     fn stage_value<'a>(&mut self, graphics_context: &'a GraphicsContext) {
@@ -447,6 +462,11 @@ impl EffectParamCustom for EffectParamCustomColor {
 impl BindableProperty for EffectParamCustomColor {
     fn add_properties(&self, properties: &mut Properties) {
         self.property.add_properties(properties);
+    }
+
+    fn reload_settings(&mut self, settings: &mut SettingsContext) {
+        self.property.reload_settings(settings);
+        self.effect_param.prepare_value((self.property.get_value() as Color).into());
     }
 
     fn prepare_values(&mut self) {}
@@ -575,6 +595,13 @@ impl BindableProperty for EffectParamCustomFFT {
         self.property_channel.add_properties(properties);
         self.property_dampening_factor_attack.add_properties(properties);
         self.property_dampening_factor_release.add_properties(properties);
+    }
+
+    fn reload_settings(&mut self, settings: &mut SettingsContext) {
+        self.property_mix.reload_settings(settings);
+        self.property_channel.reload_settings(settings);
+        self.property_dampening_factor_attack.reload_settings(settings);
+        self.property_dampening_factor_release.reload_settings(settings);
     }
 
     fn prepare_values(&mut self) {

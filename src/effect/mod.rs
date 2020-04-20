@@ -37,6 +37,7 @@ pub use loaded_value::*;
 /// An object representing a binding of setting-properties to graphics uniforms.
 pub trait BindableProperty: Downcast {
     fn add_properties(&self, properties: &mut Properties);
+    fn reload_settings(&mut self, settings: &mut SettingsContext);
     fn prepare_values(&mut self);
     fn stage_value<'a>(&mut self, graphics_context: &'a GraphicsContext);
     fn assign_value<'a>(&mut self, graphics_context: &'a FilterContext);
@@ -177,6 +178,10 @@ impl EffectParamsCustom {
         Ok(())
     }
 
+    pub fn reload_settings(&mut self, settings: &mut SettingsContext) {
+        self.params.iter_mut().for_each(|param| param.reload_settings(settings));
+    }
+
     pub fn prepare_values(&mut self) {
         self.params.iter_mut().for_each(|param| param.prepare_values());
     }
@@ -231,6 +236,10 @@ pub struct EffectParams {
 }
 
 impl EffectParams {
+    pub fn reload_settings(&mut self, settings: &mut SettingsContext) {
+        self.custom.reload_settings(settings);
+    }
+
     pub fn stage_values(&mut self, graphics_context: &GraphicsContext) {
         self.frame.stage_value(graphics_context);
         self.framerate.stage_value(graphics_context);
@@ -277,5 +286,45 @@ impl PreparedEffect {
 
     pub fn add_properties(&self, properties: &mut Properties) {
         self.params.add_properties(properties);
+    }
+
+    pub fn create_effect<'a>(shader_path: &PathBuf, shader_source: &str, graphics_context: &'a GraphicsContext) -> Result<(GraphicsContextDependentEnabled<'a, GraphicsEffect>, PreprocessResult), Cow<'static, str>> {
+        const EFFECT_SOURCE_TEMPLATE: &'static str = include_str!("../effect_template.effect");
+
+        let (preprocess_result, effect_source) = {
+            let pattern = Regex::new(r"(?P<shader>__SHADER__)").unwrap();
+            let effect_source = pattern.replace_all(EFFECT_SOURCE_TEMPLATE, shader_source);
+
+            let (preprocess_result, effect_source) = preprocess(&effect_source);
+
+            (preprocess_result, effect_source.into_owned())
+        };
+
+        let shader_path_c = CString::new(
+            shader_path.to_str().ok_or_else(|| {
+                "Specified shader path is not a valid UTF-8 string."
+            })?
+        ).map_err(|_| "Shader path cannot be converted to a C string.")?;
+        let effect_source_c = CString::new(effect_source.clone())
+            .map_err(|_| "Shader contents cannot be converted to a C string.")?;
+
+        let effect = {
+            let capture = LogCaptureHandler::new(LogLevel::Error).unwrap();
+            let result = GraphicsEffect::from_effect_string(
+                effect_source_c.as_c_str(),
+                shader_path_c.as_c_str(),
+                &graphics_context,
+            );
+
+            result.map_err(|err| {
+                if let Some(err) = err {
+                    Cow::Owned(format!("Could not create the effect due to the following error: {}", err))
+                } else {
+                    Cow::Owned(format!("Could not create the effect due to the following error:\n{}", capture.to_string()))
+                }
+            })
+        }?;
+
+        Ok((effect, preprocess_result))
     }
 }

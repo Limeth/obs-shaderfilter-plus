@@ -1,3 +1,4 @@
+use std::fmt::Debug;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -60,6 +61,8 @@ pub trait LoadedValueType: Sized {
         }
     }
 
+    fn reload_settings(&mut self, settings: &mut SettingsContext);
+
     fn add_properties(&self, properties: &mut Properties);
 
     fn get_value(&self) -> Self::Output;
@@ -72,6 +75,7 @@ pub struct LoadedValueTypeSourceArgs<T> where T: FromStr + Clone {
 /// A loaded value of which the value can only be specified in the shader source code.
 /// Returns `Some(T)`, if a default value is specified.
 /// Otherwise, may return `None`.
+#[derive(Debug)]
 pub struct LoadedValueTypeSource<T> where T: FromStr + Clone {
     value: Option<T>,
 }
@@ -93,6 +97,10 @@ impl<T> LoadedValueType for LoadedValueTypeSource<T> where T: FromStr + Clone {
         Ok(Self { value })
     }
 
+    fn reload_settings(&mut self, _settings: &mut SettingsContext) {
+        // All values are taken from the source code, nothing to reload
+    }
+
     fn add_properties(&self, _properties: &mut Properties) {
         // Simple property types do not produce any UI
     }
@@ -102,6 +110,7 @@ impl<T> LoadedValueType for LoadedValueTypeSource<T> where T: FromStr + Clone {
     }
 }
 
+#[derive(Debug)]
 pub struct LoadedValueTypePropertyDescriptorArgs<T: PropertyDescriptorSpecialization> {
     default_value: T,
 }
@@ -143,6 +152,10 @@ where T: PropertyDescriptorSpecialization + Sized,
         <Self as LoadedValueTypePropertyDescriptor>::from_identifier(args, identifier, preprocess_result, settings)
     }
 
+    fn reload_settings(&mut self, settings: &mut SettingsContext) {
+        // Descriptors are loaded from the source code, not the settings
+    }
+
     fn add_properties(&self, properties: &mut Properties) {
         <Self as LoadedValueTypePropertyDescriptor>::add_properties(self, properties)
     }
@@ -154,6 +167,7 @@ where T: PropertyDescriptorSpecialization + Sized,
 
 /// A loaded value type, which loads a property descriptor from the shader source code.
 /// Useful for creating loaded values which retrieve their data from the effect UI.
+#[derive(Debug)]
 pub struct LoadedValueTypePropertyDescriptorF64 {
     descriptor: PropertyDescriptor<PropertyDescriptorSpecializationF64>,
     description: LoadedValueTypeSource<String>,
@@ -253,6 +267,7 @@ impl LoadedValueTypePropertyDescriptor for LoadedValueTypePropertyDescriptorF64 
     }
 }
 
+#[derive(Debug)]
 pub struct LoadedValueTypePropertyDescriptorI32 {
     descriptor: PropertyDescriptor<PropertyDescriptorSpecializationI32>,
     description: LoadedValueTypeSource<String>,
@@ -352,6 +367,7 @@ impl LoadedValueTypePropertyDescriptor for LoadedValueTypePropertyDescriptorI32 
     }
 }
 
+#[derive(Debug)]
 pub struct LoadedValueTypePropertyDescriptorColor {
     descriptor: PropertyDescriptor<PropertyDescriptorSpecializationColor>,
     description: LoadedValueTypeSource<String>,
@@ -398,6 +414,7 @@ impl LoadedValueTypePropertyDescriptor for LoadedValueTypePropertyDescriptorColo
     }
 }
 
+#[derive(Debug)]
 pub struct LoadedValueTypePropertyDescriptorBool {
     descriptor: PropertyDescriptor<PropertyDescriptorSpecializationBool>,
     description: LoadedValueTypeSource<String>,
@@ -443,11 +460,9 @@ impl LoadedValueTypePropertyDescriptor for LoadedValueTypePropertyDescriptorBool
     }
 }
 
-pub struct LoadedValueTypePropertyArgs<T>
-where T: LoadedValueTypePropertyDescriptor,
-      <T as LoadedValueTypePropertyDescriptor>::Specialization: ValuePropertyDescriptorSpecialization,
-      <<T as LoadedValueTypePropertyDescriptor>::Specialization as ValuePropertyDescriptorSpecialization>::ValueType: FromStr + Clone,
-{
+pub trait LoadedValueTypePropertyBounds = LoadedValueTypePropertyDescriptor<Specialization: ValuePropertyDescriptorSpecialization<ValueType: FromStr + Clone>> + Debug;
+
+pub struct LoadedValueTypePropertyArgs<T: LoadedValueTypePropertyBounds> {
     pub allow_definitions_in_source: bool,
     pub default_descriptor_specialization: <T as LoadedValueTypePropertyDescriptor>::Specialization,
     pub default_value: <<T as LoadedValueTypePropertyDescriptor>::Specialization as ValuePropertyDescriptorSpecialization>::ValueType,
@@ -456,21 +471,14 @@ where T: LoadedValueTypePropertyDescriptor,
 /// Represents a hierarchically-loaded value.
 /// This value can be either provided by the shader source code,
 /// or from the effect settings properties.
-pub struct LoadedValueTypeProperty<T>
-where T: LoadedValueTypePropertyDescriptor,
-      <T as LoadedValueTypePropertyDescriptor>::Specialization: ValuePropertyDescriptorSpecialization,
-      <<T as LoadedValueTypePropertyDescriptor>::Specialization as ValuePropertyDescriptorSpecialization>::ValueType: FromStr + Clone,
-{
+pub struct LoadedValueTypeProperty<T: LoadedValueTypePropertyBounds> {
     loaded_value_descriptor: Option<T>,
     loaded_value_default: Option<LoadedValueTypeSource::<<<T as LoadedValueTypePropertyDescriptor>::Specialization as ValuePropertyDescriptorSpecialization>::ValueType>>,
+    default_value: Option<<<T as LoadedValueTypePropertyDescriptor>::Specialization as ValuePropertyDescriptorSpecialization>::ValueType>,
     value: <<T as LoadedValueTypePropertyDescriptor>::Specialization as ValuePropertyDescriptorSpecialization>::ValueType,
 }
 
-impl<T> LoadedValueType for LoadedValueTypeProperty<T>
-where T: LoadedValueTypePropertyDescriptor,
-      <T as LoadedValueTypePropertyDescriptor>::Specialization: ValuePropertyDescriptorSpecialization,
-      <<T as LoadedValueTypePropertyDescriptor>::Specialization as ValuePropertyDescriptorSpecialization>::ValueType: FromStr + Clone,
-{
+impl<T: LoadedValueTypePropertyBounds> LoadedValueType for LoadedValueTypeProperty<T> {
     type Output = <<T as LoadedValueTypePropertyDescriptor>::Specialization as ValuePropertyDescriptorSpecialization>::ValueType;
     type Args = LoadedValueTypePropertyArgs<T>;
 
@@ -491,6 +499,7 @@ where T: LoadedValueTypePropertyDescriptor,
                 Self {
                     loaded_value_descriptor: None,
                     loaded_value_default: None,
+                    default_value: None,
                     value: result?,
                 }
             },
@@ -537,10 +546,21 @@ where T: LoadedValueTypePropertyDescriptor,
                 Self {
                     loaded_value_descriptor: Some(loaded_value_descriptor),
                     loaded_value_default,
+                    default_value: Some(default_value),
                     value: loaded_value,
                 }
             }
         })
+    }
+
+    fn reload_settings(&mut self, settings: &mut SettingsContext) {
+        // Assumes that it is not necessary to reload the descriptors and default values, otherwise
+        // we would need to reload both loaded values and figure out the default value as in
+        // `from_identifier`.
+        if let Some(loaded_value_descriptor) = self.loaded_value_descriptor.as_ref() {
+            let descriptor = loaded_value_descriptor.get_value();
+            self.value = settings.get_property_value(&descriptor, self.default_value.as_ref().unwrap());
+        }
     }
 
     fn add_properties(&self, properties: &mut Properties) {

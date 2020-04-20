@@ -61,9 +61,9 @@ dependencies = [
 
 [[package]]
 name = "backtrace-sys"
-version = "0.1.35"
+version = "0.1.36"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7de8aba10a69c8e8d7622c5710229485ec32e9d55fdad160ea559c086fdcd118"
+checksum = "78848718ee1255a2485d1309ad9cdecfc2e7d0362dd11c6829364c6b35ae1bc7"
 dependencies = [
  "cc",
  "libc",
@@ -331,7 +331,7 @@ dependencies = [
 [[package]]
 name = "obs-sys"
 version = "0.1.2"
-source = "git+https://github.com/Limeth/rust-obs-plugins#db5e7d08dee9cbf4e02500606593a2fc140c025f"
+source = "git+https://github.com/Limeth/rust-obs-plugins#430c196962b439011c275e10218575d793079262"
 dependencies = [
  "bindgen",
 ]
@@ -339,7 +339,7 @@ dependencies = [
 [[package]]
 name = "obs-wrapper"
 version = "0.1.5"
-source = "git+https://github.com/Limeth/rust-obs-plugins#db5e7d08dee9cbf4e02500606593a2fc140c025f"
+source = "git+https://github.com/Limeth/rust-obs-plugins#430c196962b439011c275e10218575d793079262"
 dependencies = [
  "backtrace",
  "cstr",
@@ -594,9 +594,9 @@ checksum = "ac3b87c63620426dd9b991e5ce0329eff545bccbbb34f3be09ff6fb6ab51b7b6"
 
 [[package]]
 name = "winapi-util"
-version = "0.1.4"
+version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fa515c5163a99cc82bab70fd3bfdd36d827be85de63737b40fcef2ce084a436e"
+checksum = "70ec6ce85bb158151cae5e5c87f95a8e97d2c0c4b001223f33a334e3ce5de178"
 dependencies = [
  "winapi",
 ]

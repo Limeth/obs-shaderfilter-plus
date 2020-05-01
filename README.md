@@ -3,14 +3,23 @@ OBS ShaderFilter Plus is a plugin for Open Broadcaster Software.
 It can be used to apply effects to sources using manually created GLSL/HLSL shaders.
 Add a filter to a source by right-clicking a source, going to `Filters`, and adding `ShaderFilter Plus`.
 
+## What are Shaders?
+Shaders are programs executed on the GPU. They can be used to apply customizable special visual effects. The shaders used by this plugin are a special subset of shaders called _fragment shaders_. These shaders are executed once for each pixel of the source, every frame. See [Usage Guide](#usage-guide) for examples.
+
+Different graphics interfaces, such as OpenGL and DirectX, use different shader languages with incompatible syntax, so it is important to be aware of the graphics interfaces OBS makes use of.
+
+* OBS on Windows uses DirectX by default, but can be forced to use OpenGL.
+* OBS on Linux uses OpenGL.
+
 Shaders are executed using OpenGL (GLSL shaders) or DirectX (HLSL shaders),
 depending on your platform.
-OBS on Windows usually uses DirectX, but can be compiled with OpenGL support.
-OBS on Linux uses OpenGL.
 
-When OBS is compiled with OpenGL support, it performs primitive translation of HLSL sources to GLSL.
-Therefore, if you would like your shaders to run with both graphics APIs, you should write your sources in HLSL.
-However, if you only care about using them on Linux, for example, GLSL is fine.
+## Writing Cross-Platform Shaders
+### Cross-Platform HLSL
+When OBS is run with OpenGL, it performs primitive translation of HLSL sources to GLSL. However, this translation is limited and performed via basic string substitution, and therefore may not result in correct behavior. Despite these limitations, cross platform shaders could be written in HLSL, as long as they are simple.
+
+### Cross-Platform GLSL
+OBS on Windows may be forced to use OpenGL by launching the program with the `--allow-opengl` [launch parameter](https://obsproject.com/wiki/Launch-Parameters). This can be done by creating a shortcut to the executable and appending the parameter to the path, for example: `"C:\Program Files\obs-studio\bin\64bit\obs64.exe" --allow-opengl`. After launching OBS this way, the OpenGL renderer must be selected in the Advanced Settings. After restarting OBS with these settings applied, GLSL shaders will work properly.
 
 ## Installation
 1. Download the latest binary for your platform from [the Releases page](https://github.com/Limeth/obs-shaderfilter-plus/releases).
@@ -151,10 +160,12 @@ These properties can be applied to any user-defined uniform variable.
     ```
 5. Move `target/release/libobs_shaderfilter_plus.dll` to the OBS plugin directory.
 #### Linux
-1. Install Rust (the package manager Cargo should be bundled with it)
-2. Clone this repository and open it in the terminal
-3. Compile using `cargo build --release`
-4. Move `target/release/libobs_shaderfilter_plus.so` to the OBS plugin directory.
+1. Compile OBS by following [these instructions](https://github.com/obsproject/obs-studio/wiki/Install-Instructions#linux-build-directions).
+2. Add the directory in which `libobs.so` resides to the `LD_LIBRARY_PATH` environment variable.
+3. Install Rust (the package manager Cargo should be bundled with it)
+4. Clone this repository and open it in the terminal
+5. Compile using `cargo build --release`
+6. Move `target/release/libobs_shaderfilter_plus.so` to the OBS plugin directory.
 
 ### Tips on building OBS (fish shell, Ubuntu)
 These steps should not be necessary if you just want to compile OBS ShaderFilter Plus from source.

@@ -1,7 +1,12 @@
 # OBS ShaderFilter Plus
 OBS ShaderFilter Plus is a plugin for Open Broadcaster Software.
 It can be used to apply effects to sources using manually created GLSL/HLSL shaders.
-Add a filter to a source by right-clicking a source, going to `Filters`, and adding `ShaderFilter Plus`.
+
+1. Add a filter to a source by right-clicking a source, going to _Filters_, and adding _ShaderFilter Plus_.
+2. Select a shader by clicking the _Browse_ button and picking the file containing the shader source code via the file browser.
+3. Customize the behavior of the shader via the shader-specific user interface.
+
+Example shaders may be found in the [`examples`](examples) directory of this repository. It is a good starting point for the creation of custom effects.
 
 ## What are Shaders?
 Shaders are programs executed on the GPU. They can be used to apply customizable special visual effects. The shaders used by this plugin are a special subset of shaders called _fragment shaders_. These shaders are executed once for each pixel of the source, every frame. See [Usage Guide](#usage-guide) for examples.

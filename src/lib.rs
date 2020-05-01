@@ -398,6 +398,7 @@ impl GlobalState {
 struct Data {
     source: SourceContext,
     effect: Option<PreparedEffect>,
+    effect_fallback_blit: GraphicsContextDependentDisabled<GraphicsEffect>,
 
     creation: Instant,
     next_frame: u32,
@@ -418,6 +419,22 @@ impl Data {
         Self {
             source,
             effect: None,
+            effect_fallback_blit: {
+                const EFFECT_SOURCE_FALLBACK: &'static str = include_str!("effect_fallback.effect");
+
+                let graphics_context = GraphicsContext::enter()
+                    .expect("Could not enter the graphics context to initialize the fallback effect.");
+
+                let shader_path_c = CString::new("effect_fallback.effect").unwrap();
+                let effect_source_c = CString::new(EFFECT_SOURCE_FALLBACK)
+                    .expect("Shader contents cannot be converted to a C string.");
+
+                GraphicsEffect::from_effect_string(
+                    effect_source_c.as_c_str(),
+                    shader_path_c.as_c_str(),
+                    &graphics_context,
+                ).unwrap().disable()
+            },
             creation: Instant::now(),
             next_frame: 0,
             elapsed_time_previous: None,
@@ -561,22 +578,8 @@ impl VideoRenderSource<Data> for ScrollFocusFilter {
         } else {
             return;
         };
-        let prepared_effect = if let Some(effect) = data.effect.as_mut() {
-            effect
-        } else {
-            return;
-        };
-        let effect = &mut prepared_effect.effect.as_enabled_mut(graphics_context);
-        let params = &mut prepared_effect.params;
+
         let source = &mut data.source;
-        // let param_add = &mut data.add_val;
-        // let param_mul = &mut data.mul_val;
-        // let image = &mut data.image;
-        // let sampler = &mut data.sampler;
-
-        // let current = &mut data.current;
-
-        // let zoom = data.current_zoom as f32;
 
         let mut cx: u32 = 1;
         let mut cy: u32 = 1;
@@ -585,6 +588,22 @@ impl VideoRenderSource<Data> for ScrollFocusFilter {
             cx = target.get_base_width();
             cy = target.get_base_height();
         });
+
+        let prepared_effect = if let Some(effect) = data.effect.as_mut() {
+            effect
+        } else { // use the fallback effect
+            source.process_filter(
+                &mut data.effect_fallback_blit.as_enabled_mut(graphics_context),
+                (cx, cy),
+                ColorFormatKind::RGBA,
+                GraphicsAllowDirectRendering::NoDirectRendering,
+                |_context, _effect| {},
+            );
+            return;
+        };
+
+        let effect = &mut prepared_effect.effect.as_enabled_mut(graphics_context);
+        let params = &mut prepared_effect.params;
 
         source.process_filter(
             effect,
@@ -614,6 +633,11 @@ impl UpdateSource<Data> for ScrollFocusFilter {
             let data = data.as_mut().ok_or_else(|| "Could not access the data.")?;
 
             let shader_path = settings.get_property_value(&data.property_shader, &PathBuf::new());
+
+            if shader_path.as_path().as_os_str().is_empty() {
+                throw!("Please specify the shader source file.");
+            }
+
             let mut shader_file = File::open(&shader_path)
                 .map_err(|_| {
                     if let Some(effect) = data.effect.take() {

@@ -8,6 +8,8 @@ It can be used to apply effects to sources using manually created GLSL/HLSL shad
 
 Example shaders may be found in the [`examples`](examples) directory of this repository. It is a good starting point for the creation of custom effects.
 
+![Demo](demo.gif)
+
 ## What are Shaders?
 Shaders are programs executed on the GPU. They can be used to apply customizable special visual effects. The shaders used by this plugin are a special subset of shaders called _fragment shaders_. These shaders are executed once for each pixel of the source, every frame. See [Usage Guide](#usage-guide) for examples.
 

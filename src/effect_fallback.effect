@@ -1,6 +1,14 @@
 uniform float4x4 ViewProj;
 uniform texture2d image;
 
+uniform int   builtin_frame;
+uniform float builtin_framerate;
+uniform float builtin_elapsed_time;
+uniform float builtin_elapsed_time_previous;
+uniform float builtin_elapsed_time_since_shown;
+uniform float builtin_elapsed_time_since_shown_previous;
+uniform int2  builtin_uv_size;
+
 sampler_state builtin_texture_sampler {
     Filter = Linear;
     AddressU = Border;

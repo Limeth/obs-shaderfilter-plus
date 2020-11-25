@@ -50,12 +50,14 @@ float4 render(float2 uv) {
 Every shader loaded by this plugin has access to the following uniform variables.
 
 ```hlsl
-uniform texture2d image;                         // the source texture (the image we are filtering)
-uniform int       builtin_frame;                 // the current frame number
-uniform float     builtin_framerate;             // the current output framerate
-uniform float     builtin_elapsed_time;          // the current elapsed time
-uniform float     builtin_elapsed_time_previous; // the elapsed time in the previous frame
-uniform int2      builtin_uv_size;               // the source dimensions
+uniform texture2d image;                                     // the source texture (the image we are filtering)
+uniform int       builtin_frame;                             // the current frame number
+uniform float     builtin_framerate;                         // the current output framerate
+uniform float     builtin_elapsed_time;                      // the current elapsed time
+uniform float     builtin_elapsed_time_previous;             // the elapsed time in the previous frame
+uniform float     builtin_elapsed_time_since_shown;          // the time since the source was shown
+uniform float     builtin_elapsed_time_since_shown_previous; // the time since the source was shown of the previous frame
+uniform int2      builtin_uv_size;                           // the source dimensions
 
 sampler_state     builtin_texture_sampler { ... }; // a texture sampler with linear filtering
 ```

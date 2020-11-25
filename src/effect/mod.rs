@@ -231,6 +231,8 @@ pub struct EffectParams {
     pub framerate: EffectParamFloat,
     pub elapsed_time: EffectParamFloat,
     pub elapsed_time_previous: EffectParamFloat,
+    pub elapsed_time_since_shown: EffectParamFloat,
+    pub elapsed_time_since_shown_previous: EffectParamFloat,
     pub uv_size: EffectParamIVec2,
     pub custom: EffectParamsCustom,
 }
@@ -245,6 +247,8 @@ impl EffectParams {
         self.framerate.stage_value(graphics_context);
         self.elapsed_time.stage_value(graphics_context);
         self.elapsed_time_previous.stage_value(graphics_context);
+        self.elapsed_time_since_shown.stage_value(graphics_context);
+        self.elapsed_time_since_shown_previous.stage_value(graphics_context);
         self.uv_size.stage_value(graphics_context);
         self.custom.stage_values(graphics_context);
     }
@@ -254,6 +258,8 @@ impl EffectParams {
         self.framerate.assign_value(graphics_context);
         self.elapsed_time.assign_value(graphics_context);
         self.elapsed_time_previous.assign_value(graphics_context);
+        self.elapsed_time_since_shown.assign_value(graphics_context);
+        self.elapsed_time_since_shown_previous.assign_value(graphics_context);
         self.uv_size.assign_value(graphics_context);
         self.custom.assign_values(graphics_context);
     }
@@ -263,6 +269,8 @@ impl EffectParams {
         self.framerate.enable_and_drop(graphics_context);
         self.elapsed_time.enable_and_drop(graphics_context);
         self.elapsed_time_previous.enable_and_drop(graphics_context);
+        self.elapsed_time_since_shown.enable_and_drop(graphics_context);
+        self.elapsed_time_since_shown_previous.enable_and_drop(graphics_context);
         self.uv_size.enable_and_drop(graphics_context);
         self.custom.enable_and_drop(graphics_context);
     }

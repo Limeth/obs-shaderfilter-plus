@@ -401,8 +401,10 @@ struct Data {
     effect_fallback_blit: GraphicsContextDependentDisabled<GraphicsEffect>,
 
     creation: Instant,
+    shown: Option<Instant>,
     next_frame: u32,
     elapsed_time_previous: Option<f32>,
+    elapsed_time_since_shown_previous: Option<f32>,
 
     property_shader: PropertyDescriptor<PropertyDescriptorSpecializationPath>,
     property_shader_reload: PropertyDescriptor<PropertyDescriptorSpecializationButton>,
@@ -436,8 +438,10 @@ impl Data {
                 ).unwrap().disable()
             },
             creation: Instant::now(),
+            shown: None,
             next_frame: 0,
             elapsed_time_previous: None,
+            elapsed_time_since_shown_previous: None,
             property_shader: PropertyDescriptor {
                 name: CString::new("builtin_ui_shader").unwrap(),
                 description: CString::new("The shader to use.").unwrap(),
@@ -483,11 +487,11 @@ impl Drop for Data {
     }
 }
 
-struct ScrollFocusFilter {
+struct ShaderFilterPlus {
     context: ModuleContext,
 }
 
-impl Sourceable for ScrollFocusFilter {
+impl Sourceable for ShaderFilterPlus {
     fn get_id() -> &'static CStr {
         cstr!("obs-shaderfilter-plus")
     }
@@ -496,13 +500,13 @@ impl Sourceable for ScrollFocusFilter {
     }
 }
 
-impl GetNameSource<Data> for ScrollFocusFilter {
+impl GetNameSource<Data> for ShaderFilterPlus {
     fn get_name() -> &'static CStr {
         cstr!("ShaderFilter Plus")
     }
 }
 
-impl GetPropertiesSource<Data> for ScrollFocusFilter {
+impl GetPropertiesSource<Data> for ShaderFilterPlus {
     /// Convention for naming properties, so that they do not conflict:
     /// `builtin_ui_*` -- UI-only properties (not sent to the GPU), like the shader path
     /// `builtin_*` -- Properties either sent to the GPU or influencing other properties which are sent to the GPU
@@ -526,7 +530,7 @@ impl GetPropertiesSource<Data> for ScrollFocusFilter {
     }
 }
 
-impl VideoTickSource<Data> for ScrollFocusFilter {
+impl VideoTickSource<Data> for ShaderFilterPlus {
     fn video_tick(mut context: PluginContext<Data>, seconds: f32) {
         let (data, settings) = context.data_settings_mut();
         let data = if let Some(data) = data.as_mut() {
@@ -541,6 +545,15 @@ impl VideoTickSource<Data> for ScrollFocusFilter {
         let elapsed_time = data.creation.elapsed().as_secs_f32();
         let elapsed_time_previous = data.elapsed_time_previous.replace(elapsed_time)
             .unwrap_or(elapsed_time);
+        let elapsed_time_since_shown = if let Some(shown) = data.shown.as_ref() {
+            shown.elapsed().as_secs_f32()
+        } else {
+            data.shown = Some(Instant::now());
+            0.0
+        };
+        let elapsed_time_since_shown_previous = data.elapsed_time_since_shown_previous
+            .replace(elapsed_time_since_shown)
+            .unwrap_or(elapsed_time_since_shown);
 
         if let Some(effect) = data.effect.as_mut() {
             let params = &mut effect.params;
@@ -549,6 +562,8 @@ impl VideoTickSource<Data> for ScrollFocusFilter {
             params.framerate.prepare_value(framerate);
             params.elapsed_time.prepare_value(elapsed_time);
             params.elapsed_time_previous.prepare_value(elapsed_time_previous);
+            params.elapsed_time_since_shown.prepare_value(elapsed_time_since_shown);
+            params.elapsed_time_since_shown_previous.prepare_value(elapsed_time_since_shown_previous);
             params.uv_size.prepare_value([
                 data.source.get_base_width() as i32,
                 data.source.get_base_height() as i32,
@@ -568,7 +583,7 @@ impl VideoTickSource<Data> for ScrollFocusFilter {
     }
 }
 
-impl VideoRenderSource<Data> for ScrollFocusFilter {
+impl VideoRenderSource<Data> for ShaderFilterPlus {
     fn video_render(
         mut context: PluginContext<Data>,
         graphics_context: &mut GraphicsContext,
@@ -618,13 +633,13 @@ impl VideoRenderSource<Data> for ScrollFocusFilter {
     }
 }
 
-impl CreatableSource<Data> for ScrollFocusFilter {
+impl CreatableSource<Data> for ShaderFilterPlus {
     fn create(settings: &mut SettingsContext, source: SourceContext) -> Data {
         Data::new(source)
     }
 }
 
-impl UpdateSource<Data> for ScrollFocusFilter {
+impl UpdateSource<Data> for ShaderFilterPlus {
     fn update(
         mut context: PluginContext<Data>,
     ) {
@@ -694,6 +709,8 @@ impl UpdateSource<Data> for ScrollFocusFilter {
                 framerate: builtin_effect!("builtin_framerate"),
                 elapsed_time: builtin_effect!("builtin_elapsed_time"),
                 elapsed_time_previous: builtin_effect!("builtin_elapsed_time_previous"),
+                elapsed_time_since_shown: builtin_effect!("builtin_elapsed_time_since_shown"),
+                elapsed_time_since_shown_previous: builtin_effect!("builtin_elapsed_time_since_shown_previous"),
                 uv_size: builtin_effect!("builtin_uv_size"),
                 custom: Default::default(),
             };
@@ -747,7 +764,15 @@ impl UpdateSource<Data> for ScrollFocusFilter {
     }
 }
 
-impl Module for ScrollFocusFilter {
+impl HideSource<Data> for ShaderFilterPlus {
+    fn hide(mut context: PluginContext<Data>) {
+        if let Some(data) = context.data_mut().as_mut() {
+            data.shown = None;
+        }
+    }
+}
+
+impl Module for ShaderFilterPlus {
     fn new(context: ModuleContext) -> Self {
         Self { context }
     }
@@ -757,13 +782,14 @@ impl Module for ScrollFocusFilter {
 
     fn load(&mut self, load_context: &mut LoadContext) -> bool {
         let source = load_context
-            .create_source_builder::<ScrollFocusFilter, Data>()
+            .create_source_builder::<ShaderFilterPlus, Data>()
             .enable_get_name()
             .enable_create()
             .enable_get_properties()
             .enable_update()
             .enable_video_render()
             .enable_video_tick()
+            .enable_hide()
             .build();
 
         load_context.register_source(source);
@@ -784,4 +810,4 @@ impl Module for ScrollFocusFilter {
     }
 }
 
-obs_register_module!(ScrollFocusFilter);
+obs_register_module!(ShaderFilterPlus);

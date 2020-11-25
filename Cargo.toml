@@ -17,7 +17,7 @@ regex = "1"
 anyhow = "1.0"
 lazy_static = "1.4"
 smallvec = "1.3"
-fourier = { git = "https://github.com/calebzulawski/fourier", commit = "dc49696345e25a91406de6b123b5ce3d24784e32" }
+fourier = { git = "https://github.com/calebzulawski/fourier", rev = "dc49696345e25a91406de6b123b5ce3d24784e32" }
 num-complex = "0.2"
 paste = "0.1.7"
 ordered-float = "1.0"

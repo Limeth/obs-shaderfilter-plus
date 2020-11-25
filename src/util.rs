@@ -1,3 +1,12 @@
+#![allow(dead_code)]
+
+use std::sync::Mutex;
+use std::ffi::{VaList, CStr};
+use std::os::raw::{c_int, c_char, c_void, c_ulong};
+use std::sync::atomic::{self, AtomicBool};
+use obs_wrapper::obs_sys::{
+    LOG_ERROR, LOG_WARNING, LOG_INFO, LOG_DEBUG,
+};
 use std::cmp::Ordering;
 use std::ops::{Deref, DerefMut};
 
@@ -82,14 +91,7 @@ impl<T> Ord for Indexed<T> {
     }
 }
 
-use std::sync::{Arc, Mutex};
-use std::ffi::{VaList, CStr};
-use std::os::raw::{c_int, c_char, c_void, c_ulong};
-use std::sync::atomic::{self, AtomicBool};
-use obs_wrapper::obs_sys::{
-    LOG_ERROR, LOG_WARNING, LOG_INFO, LOG_DEBUG,
-};
-
+#[allow(non_camel_case_types)]
 pub type log_handler_t = ::std::option::Option<
     unsafe extern "C" fn(
         lvl: ::std::os::raw::c_int,

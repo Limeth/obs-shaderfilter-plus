@@ -201,7 +201,7 @@ dependencies = [
 [[package]]
 name = "fourier"
 version = "0.1.0"
-source = "git+https://github.com/calebzulawski/fourier#dc49696345e25a91406de6b123b5ce3d24784e32"
+source = "git+https://github.com/calebzulawski/fourier?rev=dc49696345e25a91406de6b123b5ce3d24784e32#dc49696345e25a91406de6b123b5ce3d24784e32"
 dependencies = [
  "fourier-algorithms",
  "fourier-macros",
@@ -211,7 +211,7 @@ dependencies = [
 [[package]]
 name = "fourier-algorithms"
 version = "0.1.1"
-source = "git+https://github.com/calebzulawski/fourier#dc49696345e25a91406de6b123b5ce3d24784e32"
+source = "git+https://github.com/calebzulawski/fourier?rev=dc49696345e25a91406de6b123b5ce3d24784e32#dc49696345e25a91406de6b123b5ce3d24784e32"
 dependencies = [
  "multiversion",
  "num-complex",
@@ -221,7 +221,7 @@ dependencies = [
 [[package]]
 name = "fourier-macros"
 version = "0.1.0"
-source = "git+https://github.com/calebzulawski/fourier#dc49696345e25a91406de6b123b5ce3d24784e32"
+source = "git+https://github.com/calebzulawski/fourier?rev=dc49696345e25a91406de6b123b5ce3d24784e32#dc49696345e25a91406de6b123b5ce3d24784e32"
 dependencies = [
  "fourier-algorithms",
  "num-complex",

@@ -1,20 +1,18 @@
 #![feature(try_blocks)]
-#![feature(clamp)]
 #![feature(c_variadic)]
 #![feature(trait_alias)]
 #![feature(associated_type_bounds)]
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Mutex, RwLock, Arc, Weak, RwLockReadGuard};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{RwLock, Arc, Weak};
 use std::borrow::Cow;
-use std::time::{Instant, Duration};
+use std::time::Instant;
 use std::path::PathBuf;
 use std::fs::File;
 use std::ffi::{CStr, CString};
 use std::io::Read;
 use ordered_float::OrderedFloat;
-use smallvec::{SmallVec, smallvec};
 use lazy_static::lazy_static;
 use obs_wrapper::{
     info::*,
@@ -25,7 +23,6 @@ use obs_wrapper::{
     source::*,
     audio::*,
 };
-use regex::Regex;
 use fourier::*;
 use num_complex::Complex;
 use util::*;
@@ -531,7 +528,7 @@ impl GetPropertiesSource<Data> for ShaderFilterPlus {
 }
 
 impl VideoTickSource<Data> for ShaderFilterPlus {
-    fn video_tick(mut context: PluginContext<Data>, seconds: f32) {
+    fn video_tick(mut context: PluginContext<Data>, _seconds: f32) {
         let (data, settings) = context.data_settings_mut();
         let data = if let Some(data) = data.as_mut() {
             data
@@ -634,7 +631,7 @@ impl VideoRenderSource<Data> for ShaderFilterPlus {
 }
 
 impl CreatableSource<Data> for ShaderFilterPlus {
-    fn create(settings: &mut SettingsContext, source: SourceContext) -> Data {
+    fn create(_settings: &mut SettingsContext, source: SourceContext) -> Data {
         Data::new(source)
     }
 }

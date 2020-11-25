@@ -1,29 +1,8 @@
 use std::fmt::Debug;
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use std::borrow::Cow;
-use std::time::{Instant, Duration};
-use std::path::PathBuf;
-use std::fs::File;
-use std::ffi::{CStr, CString};
-use std::io::Read;
-use obs_wrapper::obs_sys::{
-    MAX_AUDIO_MIXES,
-    MAX_AUDIO_CHANNELS,
-};
-use obs_wrapper::{
-    graphics::*,
-    obs_register_module,
-    prelude::*,
-    source::*,
-    context::*,
-    audio::*,
-};
-use smallvec::{SmallVec, smallvec};
-use regex::Regex;
-use paste::item;
-use crate::preprocessor::*;
+use std::ffi::CString;
+use obs_wrapper::source::*;
 use crate::*;
 
 pub trait LoadedValueType: Sized {
@@ -152,7 +131,7 @@ where T: PropertyDescriptorSpecialization + Sized,
         <Self as LoadedValueTypePropertyDescriptor>::from_identifier(args, identifier, preprocess_result, settings)
     }
 
-    fn reload_settings(&mut self, settings: &mut SettingsContext) {
+    fn reload_settings(&mut self, _settings: &mut SettingsContext) {
         // Descriptors are loaded from the source code, not the settings
     }
 
@@ -377,7 +356,7 @@ impl LoadedValueTypePropertyDescriptor for LoadedValueTypePropertyDescriptorColo
     type Specialization = PropertyDescriptorSpecializationColor;
 
     fn from_identifier(
-        args: LoadedValueTypePropertyDescriptorArgs<Self::Specialization>,
+        _args: LoadedValueTypePropertyDescriptorArgs<Self::Specialization>,
         identifier: &str,
         preprocess_result: &PreprocessResult,
         settings: &mut SettingsContext,

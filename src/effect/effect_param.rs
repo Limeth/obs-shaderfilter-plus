@@ -1,28 +1,8 @@
-use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::borrow::Cow;
-use std::time::{Instant, Duration};
-use std::path::PathBuf;
-use std::fs::File;
-use std::ffi::{CStr, CString};
-use std::io::Read;
-use obs_wrapper::obs_sys::{
-    MAX_AUDIO_MIXES,
-    MAX_AUDIO_CHANNELS,
-};
-use obs_wrapper::{
-    graphics::*,
-    obs_register_module,
-    prelude::*,
-    source::*,
-    context::*,
-    audio::*,
-};
+use obs_wrapper::{obs_sys::MAX_AUDIO_MIXES, context::*, graphics::*, source::*};
 use smallvec::{SmallVec, smallvec};
-use regex::Regex;
 use paste::item;
-use crate::preprocessor::*;
 use crate::*;
 
 /// Used to convert cloneable values into `ShaderParamType::RustType`.
@@ -46,6 +26,7 @@ macro_rules! define_effect_param_aliases {
     ($($name:ident),*$(,)?) => {
         item! {
             $(
+                #[allow(dead_code)]
                 pub type [< EffectParam $name >] = EffectParam<EffectParamTypeClone<[< ShaderParamType $name >]>>;
             )*
         }

@@ -1,32 +1,13 @@
-use std::any::Any;
-use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use std::borrow::Cow;
-use std::time::{Instant, Duration};
 use std::path::PathBuf;
-use std::fs::File;
-use std::ffi::{CStr, CString};
-use std::io::Read;
-use obs_wrapper::obs_sys::{
-    MAX_AUDIO_MIXES,
-    MAX_AUDIO_CHANNELS,
-};
+use std::ffi::CString;
 use obs_wrapper::{
     graphics::*,
-    obs_register_module,
-    prelude::*,
     source::*,
-    context::*,
-    audio::*,
 };
-use smallvec::{SmallVec, smallvec};
 use downcast::{impl_downcast, Downcast};
 use regex::Regex;
-use paste::item;
 use crate::*;
-use crate::preprocessor::*;
-use crate::util::*;
 
 mod effect_param;
 mod loaded_value;

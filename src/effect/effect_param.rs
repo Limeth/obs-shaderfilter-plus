@@ -468,7 +468,7 @@ impl BindableProperty for EffectParamCustomColor {
 pub struct EffectParamCustomFFT {
     pub effect_param: EffectParamTexture,
     pub effect_param_previous: Option<EffectParamTexture>,
-    pub audio_fft: Arc<GlobalStateAudioFFT>,
+    pub audio_fft: Option<Arc<GlobalStateAudioFFT>>,
     pub property_mix: LoadedValueTypeProperty<LoadedValueTypePropertyDescriptorI32>,
     pub property_channel: LoadedValueTypeProperty<LoadedValueTypePropertyDescriptorI32>,
     pub property_dampening_factor_attack: LoadedValueTypeProperty<LoadedValueTypePropertyDescriptorF64>,
@@ -558,15 +558,32 @@ impl EffectParamCustomFFT {
             WindowFunction::Hanning,
         );
 
-        Ok(Self {
+        let mut result = Self {
             effect_param: EffectParam::new(param.disable()),
             effect_param_previous: param_previous.map(|param_previous| EffectParam::new(param_previous.disable())),
-            audio_fft: GLOBAL_STATE.request_audio_fft(&audio_fft_descriptor),
+            audio_fft: None,
             property_mix,
             property_channel,
             property_dampening_factor_attack,
             property_dampening_factor_release,
-        })
+        };
+
+        result.request_audio_fft();
+
+        Ok(result)
+    }
+
+    fn request_audio_fft(&mut self) {
+        let audio_fft_descriptor = GlobalStateAudioFFTDescriptor::new(
+            self.property_mix.get_value() as usize - 1,
+            self.property_channel.get_value() as usize - 1,
+            self.property_dampening_factor_attack.get_value() / 100.0,
+            self.property_dampening_factor_release.get_value() / 100.0,
+            // TODO: Make customizable, but provide a sane default value
+            WindowFunction::Hanning,
+        );
+
+        self.audio_fft = Some(GLOBAL_STATE.request_audio_fft(&audio_fft_descriptor));
     }
 }
 
@@ -583,10 +600,11 @@ impl BindableProperty for EffectParamCustomFFT {
         self.property_channel.reload_settings(settings);
         self.property_dampening_factor_attack.reload_settings(settings);
         self.property_dampening_factor_release.reload_settings(settings);
+        self.request_audio_fft();
     }
 
     fn prepare_values(&mut self) {
-        let fft_result = if let Some(result) = self.audio_fft.retrieve_result() {
+        let fft_result = if let Some(result) = self.audio_fft.as_mut().unwrap().retrieve_result() {
             result
         } else {
             return;

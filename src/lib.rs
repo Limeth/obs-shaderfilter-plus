@@ -86,7 +86,7 @@ impl WindowFunction {
     }
 }
 
-#[derive(Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct GlobalStateAudioFFTDescriptor {
     mix: usize,
     channel: usize,

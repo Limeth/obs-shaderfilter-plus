@@ -6,9 +6,9 @@
 #pragma shaderfilter set min_growth_pixels__description Min Growth Pixels
 #pragma shaderfilter set max_growth_pixels__description Max Growth Pixels
 
-uniform float speed = 1.0;
-uniform float min_growth_pixels = -2.0;
-uniform float max_growth_pixels = 2.0;
+uniform float speed = 2.0;
+uniform float min_growth_pixels = -50.0;
+uniform float max_growth_pixels = 50.0;
 
 BuiltinVertData builtin_shader_vertex(BuiltinVertData v_in)
 {

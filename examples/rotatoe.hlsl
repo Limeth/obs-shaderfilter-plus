@@ -81,7 +81,9 @@ float4 render(float2 uv)
 	if (Rotate_Pixels)
 	{
 		float2 center_pixel_coordinates = float2(float(center_width_percentage) * 0.01, float(center_height_percentage) * 0.01 );
-		rgba = image.Sample(builtin_texture_sampler, mul(uv - center_pixel_coordinates, float2(rotAxis(float3(Axis_X ,Axis_Y, Axis_Z ), (angle_degrees * t))) ).xy + center_pixel_coordinates);
+		float3x3 rotate_axis = rotAxis(float3(Axis_X ,Axis_Y, Axis_Z), (angle_degrees * t));
+		float3 rotate_uv = mul(float3(uv - center_pixel_coordinates, 0), rotate_axis);
+		rgba = image.Sample(builtin_texture_sampler, rotate_uv.xy + center_pixel_coordinates);
 	}
 	if (Rotate_Colors)
 		rgba.rgb = mul(rgba.rgb, rotAxis(float3(Axis_X,Axis_Y,Axis_Z), (angle_degrees * t))).xyz;

@@ -94,7 +94,8 @@ float4 render(float2 uv)
 
     if (Apply_To_Alpha_Layer)
     {
-        float4 luma = float4(dot(color, float4(0.30, 0.59, 0.11, 1.0)));
+				float luma_dot = dot(color, float4(0.30, 0.59, 0.11, 1.0));
+				float4 luma = float4(luma_dot, luma_dot, luma_dot, luma_dot);
         if (Replace_Image_Color)
             color = luma;
         rgba = lerp(original_color, rgba * color, alpha);

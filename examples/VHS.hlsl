@@ -77,7 +77,8 @@ float4 render(float2 st)
     {
         color = image.Sample(builtin_texture_sampler, st);
         original_color = color;
-        float4 luma = float4(dot(color, float4(0.30, 0.59, 0.11, 1.0)));
+        float luma_dot = dot(color, float4(0.30, 0.59, 0.11, 1.0));
+        float4 luma = float4(luma_dot, luma_dot, luma_dot, luma_dot);
         if (Replace_Image_Color)
             color = luma;
         rgba = lerp(original_color, rgba * color, clamp(Alpha_Percentage * .01, 0, 1.0));

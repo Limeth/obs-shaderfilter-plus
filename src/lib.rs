@@ -413,13 +413,14 @@ struct Data {
     property_message_display: bool,
 
     settings_update_requested: Arc<AtomicBool>,
+    shown: bool,
     enabled: Arc<AtomicBool>,
 }
 
 impl Data {
     pub fn new(source: SourceContext) -> Self {
         let settings_update_requested = Arc::new(AtomicBool::new(true));
-        let enabled = Arc::new(AtomicBool::new(true));
+        let enabled = Arc::new(AtomicBool::new(false));
         let enabled_clone = enabled.clone();
 
         Self {
@@ -482,6 +483,7 @@ impl Data {
             },
             property_message_display: false,
             settings_update_requested,
+            shown: false,
             enabled,
         }
     }
@@ -556,10 +558,18 @@ impl VideoTickSource<Data> for ShaderFilterPlus {
         let elapsed_time_previous = data.elapsed_time_previous.replace(elapsed_time)
             .unwrap_or(elapsed_time);
         let now = Instant::now();
-        let elapsed_time_since_shown = if let Some(shown_at) = data.shown_at.as_ref() {
-            shown_at.elapsed().as_secs_f32()
+        let elapsed_time_since_shown = if data.shown {
+            if let Some(shown_at) = data.shown_at.as_ref() {
+                shown_at.elapsed().as_secs_f32()
+            } else {
+                data.shown_at = Some(now);
+                0.0
+            }
         } else {
-            data.shown_at = Some(now);
+            if data.shown_at.is_some() {
+                data.shown_at = None;
+            }
+
             0.0
         };
         let elapsed_time_since_enabled = if data.enabled.load(Ordering::SeqCst) {
@@ -574,7 +584,7 @@ impl VideoTickSource<Data> for ShaderFilterPlus {
                 data.enabled_at = None;
             }
 
-            std::f32::NAN
+            0.0
         };
         let elapsed_time_since_shown_previous = data.elapsed_time_since_shown_previous
             .replace(elapsed_time_since_shown)
@@ -799,7 +809,15 @@ impl UpdateSource<Data> for ShaderFilterPlus {
 impl HideSource<Data> for ShaderFilterPlus {
     fn hide(mut context: PluginContext<Data>) {
         if let Some(data) = context.data_mut().as_mut() {
-            data.shown_at = None;
+            data.shown = false;
+        }
+    }
+}
+
+impl ShowSource<Data> for ShaderFilterPlus {
+    fn show(mut context: PluginContext<Data>) {
+        if let Some(data) = context.data_mut().as_mut() {
+            data.shown = true;
         }
     }
 }
@@ -823,6 +841,7 @@ impl Module for ShaderFilterPlus {
             .enable_video_render()
             .enable_video_tick()
             .enable_hide()
+            .enable_show()
             .build();
 
         load_context.register_source(source);

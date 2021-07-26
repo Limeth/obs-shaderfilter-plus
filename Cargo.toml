@@ -1,6 +1,6 @@
 [package]
 name = "obs-shaderfilter-plus"
-version = "0.3.0"
+version = "0.3.1"
 authors = ["Jakub Hlusička <jakub.hlusicka@email.cz>"]
 edition = "2018"
 

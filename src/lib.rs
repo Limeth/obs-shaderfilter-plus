@@ -397,11 +397,15 @@ struct Data {
     effect: Option<PreparedEffect>,
     effect_fallback_blit: GraphicsContextDependentDisabled<GraphicsEffect>,
 
+    signal_callback_enable: EnableSignalCallbackHandle,
+
     creation: Instant,
-    shown: Option<Instant>,
+    shown_at: Option<Instant>,
+    enabled_at: Option<Instant>,
     next_frame: u32,
     elapsed_time_previous: Option<f32>,
     elapsed_time_since_shown_previous: Option<f32>,
+    elapsed_time_since_enabled_previous: Option<f32>,
 
     property_shader: PropertyDescriptor<PropertyDescriptorSpecializationPath>,
     property_shader_reload: PropertyDescriptor<PropertyDescriptorSpecializationButton>,
@@ -409,13 +413,19 @@ struct Data {
     property_message_display: bool,
 
     settings_update_requested: Arc<AtomicBool>,
+    enabled: Arc<AtomicBool>,
 }
 
 impl Data {
     pub fn new(source: SourceContext) -> Self {
         let settings_update_requested = Arc::new(AtomicBool::new(true));
+        let enabled = Arc::new(AtomicBool::new(true));
+        let enabled_clone = enabled.clone();
 
         Self {
+            signal_callback_enable: source.on_signal_enable(Box::new(move |enabled_new| {
+                enabled_clone.store(enabled_new, Ordering::SeqCst);
+            })),
             source,
             effect: None,
             effect_fallback_blit: {
@@ -435,10 +445,12 @@ impl Data {
                 ).unwrap().disable()
             },
             creation: Instant::now(),
-            shown: None,
+            shown_at: None,
+            enabled_at: None,
             next_frame: 0,
             elapsed_time_previous: None,
             elapsed_time_since_shown_previous: None,
+            elapsed_time_since_enabled_previous: None,
             property_shader: PropertyDescriptor {
                 name: CString::new("builtin_ui_shader").unwrap(),
                 description: CString::new("The shader to use.").unwrap(),
@@ -470,6 +482,7 @@ impl Data {
             },
             property_message_display: false,
             settings_update_requested,
+            enabled,
         }
     }
 }
@@ -542,15 +555,33 @@ impl VideoTickSource<Data> for ShaderFilterPlus {
         let elapsed_time = data.creation.elapsed().as_secs_f32();
         let elapsed_time_previous = data.elapsed_time_previous.replace(elapsed_time)
             .unwrap_or(elapsed_time);
-        let elapsed_time_since_shown = if let Some(shown) = data.shown.as_ref() {
-            shown.elapsed().as_secs_f32()
+        let now = Instant::now();
+        let elapsed_time_since_shown = if let Some(shown_at) = data.shown_at.as_ref() {
+            shown_at.elapsed().as_secs_f32()
         } else {
-            data.shown = Some(Instant::now());
+            data.shown_at = Some(now);
             0.0
+        };
+        let elapsed_time_since_enabled = if data.enabled.load(Ordering::SeqCst) {
+            if let Some(enabled_at) = data.enabled_at.as_ref() {
+                enabled_at.elapsed().as_secs_f32()
+            } else {
+                data.enabled_at = Some(now);
+                0.0
+            }
+        } else {
+            if data.enabled_at.is_some() {
+                data.enabled_at = None;
+            }
+
+            std::f32::NAN
         };
         let elapsed_time_since_shown_previous = data.elapsed_time_since_shown_previous
             .replace(elapsed_time_since_shown)
             .unwrap_or(elapsed_time_since_shown);
+        let elapsed_time_since_enabled_previous = data.elapsed_time_since_enabled_previous
+            .replace(elapsed_time_since_enabled)
+            .unwrap_or(elapsed_time_since_enabled);
 
         if let Some(effect) = data.effect.as_mut() {
             let params = &mut effect.params;
@@ -561,6 +592,8 @@ impl VideoTickSource<Data> for ShaderFilterPlus {
             params.elapsed_time_previous.prepare_value(elapsed_time_previous);
             params.elapsed_time_since_shown.prepare_value(elapsed_time_since_shown);
             params.elapsed_time_since_shown_previous.prepare_value(elapsed_time_since_shown_previous);
+            params.elapsed_time_since_enabled.prepare_value(elapsed_time_since_enabled);
+            params.elapsed_time_since_enabled_previous.prepare_value(elapsed_time_since_enabled_previous);
             params.uv_size.prepare_value([
                 data.source.get_base_width() as i32,
                 data.source.get_base_height() as i32,
@@ -708,6 +741,8 @@ impl UpdateSource<Data> for ShaderFilterPlus {
                 elapsed_time_previous: builtin_effect!("builtin_elapsed_time_previous"),
                 elapsed_time_since_shown: builtin_effect!("builtin_elapsed_time_since_shown"),
                 elapsed_time_since_shown_previous: builtin_effect!("builtin_elapsed_time_since_shown_previous"),
+                elapsed_time_since_enabled: builtin_effect!("builtin_elapsed_time_since_enabled"),
+                elapsed_time_since_enabled_previous: builtin_effect!("builtin_elapsed_time_since_enabled_previous"),
                 uv_size: builtin_effect!("builtin_uv_size"),
                 custom: Default::default(),
             };
@@ -764,7 +799,7 @@ impl UpdateSource<Data> for ShaderFilterPlus {
 impl HideSource<Data> for ShaderFilterPlus {
     fn hide(mut context: PluginContext<Data>) {
         if let Some(data) = context.data_mut().as_mut() {
-            data.shown = None;
+            data.shown_at = None;
         }
     }
 }
@@ -773,6 +808,7 @@ impl Module for ShaderFilterPlus {
     fn new(context: ModuleContext) -> Self {
         Self { context }
     }
+
     fn get_ctx(&self) -> &ModuleContext {
         &self.context
     }

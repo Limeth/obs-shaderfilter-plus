@@ -1,6 +1,6 @@
 [package]
 name = "obs-shaderfilter-plus"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Jakub Hlusička <jakub.hlusicka@email.cz>"]
 edition = "2018"
 
@@ -12,7 +12,6 @@ crate-type = ["cdylib"]
 
 [dependencies]
 obs-wrapper = { git = "https://github.com/Limeth/rust-obs-plugins" }
-# obs-wrapper = { path = "../rust-obs-plugins" }
 regex = "1"
 anyhow = "1.0"
 lazy_static = "1.4"

@@ -23,7 +23,7 @@ uniform float max_worble_size = 100.0;
 
 //random values in range if 0.0 to 1.0
 float noise_gen(float n){
-  return fract(sin(n) * 43758.5453f);
+  return frac(sin(n) * 43758.5453f);
 }
 
 BuiltinVertData builtin_shader_vertex(BuiltinVertData v_in)

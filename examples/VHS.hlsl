@@ -33,7 +33,7 @@ uniform bool Apply_To_Specific_Color;
 
 float rand(float2 co)
 {
-    return frac(sin(dot(co.xy ,float2(12.9898,78.233))) * 43758.5453);
+    return frac(sin(dot(co.xy, float2(12.9898, 78.233))) * 43758.5453);
 }
 
 float verticalBar(float pos, float uvY, float offset)
@@ -51,9 +51,9 @@ float4 render(float2 st)
     float2 uv = st;
     for (float i = 0.0; i < 0.71; i += 0.1313)
     {
-        float d = mod((builtin_elapsed_time * i), 1.7);
+        float d = fmod((builtin_elapsed_time * i), 1.7);
         float o = sin(1.0 - tan(builtin_elapsed_time * 0.24 * i));
-    	o *= offsetIntensity;
+        o *= offsetIntensity;
         uv.x += verticalBar(d, uv.y, o);
     }
     float uvY = uv.y;
